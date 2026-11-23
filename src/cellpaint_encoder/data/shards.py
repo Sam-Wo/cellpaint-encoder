@@ -37,7 +37,9 @@ def decode_array(data: bytes) -> np.ndarray:
 
 
 class ShardWriter:
-    def __init__(self, out_dir: str | Path, prefix: str = "shard", max_bytes: float = 1e9, zstd_level: int = 3):
+    def __init__(
+        self, out_dir: str | Path, prefix: str = "shard", max_bytes: float = 1e9, zstd_level: int = 3
+    ):
         self.dir = Path(out_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.prefix, self.max_bytes, self.level = prefix, max_bytes, zstd_level
@@ -75,8 +77,16 @@ class ShardWriter:
         data = encode_array(arr, self.level)
         off = self._add(f"{key}.npy.zst", data)
         self._add(f"{key}.json", json.dumps(meta, sort_keys=True).encode())
-        self.rows.append({"key": key, "shard": self.name, "offset": off, "size": len(data),
-                          "shape": list(arr.shape), **meta})
+        self.rows.append(
+            {
+                "key": key,
+                "shard": self.name,
+                "offset": off,
+                "size": len(data),
+                "shape": list(arr.shape),
+                **meta,
+            }
+        )
         self.raw_bytes += arr.nbytes
         self.zst_bytes += len(data)
         x = arr.reshape(arr.shape[0], -1).astype(np.float64) / 255.0
@@ -91,9 +101,13 @@ class ShardWriter:
             self.tf = None
         idx = pd.DataFrame(self.rows)
         idx.to_parquet(self.dir / "index.parquet", index=False)
-        stats = {"n_samples": len(self.rows), "n_shards": self.n_shard + 1, "raw_bytes": self.raw_bytes,
-                 "zstd_bytes": self.zst_bytes,
-                 "zstd_ratio": (self.zst_bytes / self.raw_bytes) if self.raw_bytes else None}
+        stats = {
+            "n_samples": len(self.rows),
+            "n_shards": self.n_shard + 1,
+            "raw_bytes": self.raw_bytes,
+            "zstd_bytes": self.zst_bytes,
+            "zstd_ratio": (self.zst_bytes / self.raw_bytes) if self.raw_bytes else None,
+        }
         if self._npix:
             mean = self._sum / self._npix
             std = np.sqrt(np.maximum(self._sumsq / self._npix - mean**2, 1e-12))

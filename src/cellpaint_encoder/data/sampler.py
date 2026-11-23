@@ -27,9 +27,18 @@ def _seed(*parts) -> int:
 
 
 class BalancedBatchSampler:
-    def __init__(self, index: pd.DataFrame, micro_batch: int, seed: int, micro_per_epoch: int,
-                 sources: list[str] | tuple[str, ...] | None = None, dmso_cap: float = 0.2,
-                 balance: str = "source", start: int = 0, stop: int | None = None):
+    def __init__(
+        self,
+        index: pd.DataFrame,
+        micro_batch: int,
+        seed: int,
+        micro_per_epoch: int,
+        sources: list[str] | tuple[str, ...] | None = None,
+        dmso_cap: float = 0.2,
+        balance: str = "source",
+        start: int = 0,
+        stop: int | None = None,
+    ):
         if balance not in ("source", "natural"):
             raise ValueError(f"balance must be source|natural, got {balance!r}")
         self.micro_batch, self.seed, self.P = int(micro_batch), int(seed), int(micro_per_epoch)

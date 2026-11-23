@@ -4,6 +4,9 @@ data:
   train_sources: [source_2, source_3, source_8]
   eval_sources: [source_2, source_3, source_8, source_6]
   sites_per_well: 2
+  manifest: data/cutdown/manifest.parquet
+  shards_dir: data/cutdown/shards/train
+  dev_shards_dir: data/cutdown/shards/dev
   e4_sources: [source_3]
   e4_plates_per_source: 2
 eval:

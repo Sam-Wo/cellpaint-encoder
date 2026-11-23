@@ -13,8 +13,9 @@ import numpy as np
 MAX_PIX_PER_SITE = 250_000  # pixel subsample per site and channel when pooling percentiles
 
 
-def plate_percentiles(sites: list[np.ndarray], lo: float = 0.1, hi: float = 99.9,
-                      seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+def plate_percentiles(
+    sites: list[np.ndarray], lo: float = 0.1, hi: float = 99.9, seed: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
     """``sites``: list of float32 ``[C, H, W]``. Returns (lo[C], hi[C]) over pooled pixels."""
     if not sites:
         raise ValueError("no DMSO sites to compute plate percentiles")
@@ -24,7 +25,11 @@ def plate_percentiles(sites: list[np.ndarray], lo: float = 0.1, hi: float = 99.9
     for s in sites:
         flat = s.reshape(C, -1)
         n = flat.shape[1]
-        idx = rng.choice(n, size=min(n, MAX_PIX_PER_SITE), replace=False) if n > MAX_PIX_PER_SITE else slice(None)
+        idx = (
+            rng.choice(n, size=min(n, MAX_PIX_PER_SITE), replace=False)
+            if n > MAX_PIX_PER_SITE
+            else slice(None)
+        )
         for c in range(C):
             pooled[c].append(flat[c, idx])
     p_lo = np.array([np.percentile(np.concatenate(p), lo) for p in pooled], np.float32)
@@ -54,7 +59,9 @@ def normalise_site(site: np.ndarray, mode: str, plate_norm: dict | None, lo: flo
     if mode == "per_plate_dmso":
         if plate_norm is None:
             raise KeyError("per_plate_dmso normalisation needs the plate's percentiles")
-        return to_uint8(site, np.asarray(plate_norm["lo"], np.float32), np.asarray(plate_norm["hi"], np.float32))
+        return to_uint8(
+            site, np.asarray(plate_norm["lo"], np.float32), np.asarray(plate_norm["hi"], np.float32)
+        )
     if mode == "per_image":
         return to_uint8(site, *image_percentiles(site, lo, hi))
     raise ValueError(f"unknown norm_mode {mode!r}")

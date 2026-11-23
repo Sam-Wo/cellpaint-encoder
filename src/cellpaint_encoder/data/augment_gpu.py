@@ -29,10 +29,19 @@ import torch.nn.functional as F
 from ..config import AugCfg
 
 # the 8 elements of D4 as 2x2 matrices acting on (x, y) normalised coordinates
-_D4 = torch.tensor([
-    [[1, 0], [0, 1]], [[0, -1], [1, 0]], [[-1, 0], [0, -1]], [[0, 1], [-1, 0]],
-    [[-1, 0], [0, 1]], [[1, 0], [0, -1]], [[0, 1], [1, 0]], [[0, -1], [-1, 0]],
-], dtype=torch.float32)
+_D4 = torch.tensor(
+    [
+        [[1, 0], [0, 1]],
+        [[0, -1], [1, 0]],
+        [[-1, 0], [0, -1]],
+        [[0, 1], [-1, 0]],
+        [[-1, 0], [0, 1]],
+        [[1, 0], [0, -1]],
+        [[0, 1], [1, 0]],
+        [[0, -1], [-1, 0]],
+    ],
+    dtype=torch.float32,
+)
 
 
 def _u(g: torch.Generator, shape, lo, hi, device):
@@ -100,8 +109,16 @@ def intensity_aug(x: torch.Tensor, cfg: AugCfg, p_blur: float, g: torch.Generato
 
 
 class MultiCropAugment:
-    def __init__(self, cfg_aug: AugCfg, global_size: int, local_size: int, n_local: int, jitter: float,
-                 mean: list[float], std: list[float]):
+    def __init__(
+        self,
+        cfg_aug: AugCfg,
+        global_size: int,
+        local_size: int,
+        n_local: int,
+        jitter: float,
+        mean: list[float],
+        std: list[float],
+    ):
         self.cfg, self.gs, self.ls, self.nl, self.j = cfg_aug, global_size, local_size, n_local, jitter
         self.mean = torch.tensor(mean, dtype=torch.float32).view(1, -1, 1, 1)
         self.std = torch.tensor(std, dtype=torch.float32).view(1, -1, 1, 1)

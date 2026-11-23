@@ -45,8 +45,14 @@ def https_url(key: str) -> str:
 
 
 class Gallery:
-    def __init__(self, mirror: str | Path | None = None, byte_cap: float = 0, retries: int = 5,
-                 timeout: float = 120, ledger: str | Path | None = None):
+    def __init__(
+        self,
+        mirror: str | Path | None = None,
+        byte_cap: float = 0,
+        retries: int = 5,
+        timeout: float = 120,
+        ledger: str | Path | None | bool = None,
+    ):
         self.mirror = Path(mirror) if mirror else None
         self.byte_cap = float(byte_cap or 0)
         self.retries = retries
@@ -57,7 +63,12 @@ class Gallery:
         self._lock = threading.Lock()
         self._key_locks: dict[str, threading.Lock] = {}
         self._local = threading.local()
-        self.ledger = Path(ledger) if ledger else (self.mirror / "_download_ledger.json" if self.mirror else None)
+        if ledger is False:  # worker processes: count bytes but do not write the shared ledger
+            self.ledger = None
+        else:
+            self.ledger = (
+                Path(ledger) if ledger else (self.mirror / "_download_ledger.json" if self.mirror else None)
+            )
         self._ledger_total = self._read_ledger()
 
     # ------------------------------------------------------------------ bookkeeping
@@ -130,7 +141,8 @@ class Gallery:
                 if self.total_bytes_all_runs + need > self.byte_cap:
                     raise ByteCapExceeded(
                         f"GET {key} ({need} B) would exceed byte cap {self.byte_cap:.0f} "
-                        f"(already {self.total_bytes_all_runs:.0f})")
+                        f"(already {self.total_bytes_all_runs:.0f})"
+                    )
         headers = {"Range": f"bytes={byte_range[0]}-{byte_range[1]}"} if byte_range else {}
         data = self._request("GET", https_url(key), headers=headers).content
         with self._lock:

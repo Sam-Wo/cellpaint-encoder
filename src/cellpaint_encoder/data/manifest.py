@@ -52,9 +52,13 @@ def split_plates(plates: pd.DataFrame, frac: float, seed: int) -> dict[str, str]
     return out
 
 
-def build_manifest(cfg: DataCfg, anchor: pd.DataFrame, load_data: dict[str, pd.DataFrame],
-                   anchor_low: pd.DataFrame | None = None,
-                   extra_plates: pd.DataFrame | None = None) -> pd.DataFrame:
+def build_manifest(
+    cfg: DataCfg,
+    anchor: pd.DataFrame,
+    load_data: dict[str, pd.DataFrame],
+    anchor_low: pd.DataFrame | None = None,
+    extra_plates: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """``anchor``: source,batch,plate,well,compound_id,is_dmso (10 uM, all anchor + DMSO wells of the
     anchor plates). ``load_data``: plate -> parsed load_data (see load_data.parse_load_data).
     ``extra_plates``: optional rows source,batch,plate,eval_set (E3/E4) with all wells of those
@@ -97,8 +101,9 @@ def build_manifest(cfg: DataCfg, anchor: pd.DataFrame, load_data: dict[str, pd.D
     return m
 
 
-def _plate_rows(cfg: DataCfg, ld: pd.DataFrame, aw: pd.DataFrame, source: str, plate_split: str,
-                eval_set: str, seed: int) -> pd.DataFrame:
+def _plate_rows(
+    cfg: DataCfg, ld: pd.DataFrame, aw: pd.DataFrame, source: str, plate_split: str, eval_set: str, seed: int
+) -> pd.DataFrame:
     plate = ld.plate.iloc[0]
     d = ld.copy()
     d["compound_id"] = d.well.map(aw["compound_id"]).fillna("")
@@ -177,11 +182,19 @@ def _extra_rows(cfg: DataCfg, ld: pd.DataFrame, eval_set: str, seed: int) -> pd.
 
 def extra_eval_plates(cfg: DataCfg, plate_table: pd.DataFrame) -> pd.DataFrame:
     """E3 (TARGET2) and E4 (DMSO) plate choice from JUMP ``plate.csv.gz``, seeded per source."""
-    pt = plate_table.rename(columns={"Metadata_Source": "source", "Metadata_Batch": "batch",
-                                     "Metadata_Plate": "plate", "Metadata_PlateType": "type"})
+    pt = plate_table.rename(
+        columns={
+            "Metadata_Source": "source",
+            "Metadata_Batch": "batch",
+            "Metadata_Plate": "plate",
+            "Metadata_PlateType": "type",
+        }
+    )
     rows = []
-    for eval_set, ptype, sources, n in (("E3", "TARGET2", cfg.e3_sources, cfg.e3_plates_per_source),
-                                        ("E4", "DMSO", cfg.e4_sources, cfg.e4_plates_per_source)):
+    for eval_set, ptype, sources, n in (
+        ("E3", "TARGET2", cfg.e3_sources, cfg.e3_plates_per_source),
+        ("E4", "DMSO", cfg.e4_sources, cfg.e4_plates_per_source),
+    ):
         for s in sources:
             p = sorted(pt[(pt.source == s) & (pt.type == ptype)].plate)
             p = list(_rng(cfg.manifest_seed, eval_set, s).permutation(p)[:n]) if p else []

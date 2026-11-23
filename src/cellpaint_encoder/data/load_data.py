@@ -52,13 +52,15 @@ def parse_load_data(raw: bytes | str | pd.DataFrame) -> pd.DataFrame:
     if missing:
         src = df["Metadata_Source"].iloc[0] if len(df) else "?"
         raise MissingChannelError(f"{src}: no URL_Orig{missing} column; a 5-channel model cannot use it")
-    out = pd.DataFrame({
-        "source": df["Metadata_Source"].astype(str),
-        "batch": df["Metadata_Batch"].astype(str),
-        "plate": df["Metadata_Plate"].astype(str),
-        "well": df["Metadata_Well"].astype(str),
-        "site": df["Metadata_Site"].astype(int),
-    })
+    out = pd.DataFrame(
+        {
+            "source": df["Metadata_Source"].astype(str),
+            "batch": df["Metadata_Batch"].astype(str),
+            "plate": df["Metadata_Plate"].astype(str),
+            "well": df["Metadata_Well"].astype(str),
+            "site": df["Metadata_Site"].astype(int),
+        }
+    )
     for c in CHANNELS:
         keys = df[f"URL_Orig{c}"].astype(str).map(key_from_url)
         bad = keys[keys.str.contains(SKIP_FILE)]

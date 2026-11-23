@@ -47,8 +47,9 @@ def centre_crop(site: np.ndarray, size: int) -> np.ndarray:
     return site[..., y0 : y0 + size, x0 : x0 + size]
 
 
-def training_tiles(site_u8: np.ndarray, tile: int, n_tiles: int, fg_min: float,
-                   rng: np.random.Generator) -> tuple[list[np.ndarray], dict]:
+def training_tiles(
+    site_u8: np.ndarray, tile: int, n_tiles: int, fg_min: float, rng: np.random.Generator
+) -> tuple[list[np.ndarray], dict]:
     """Up to ``n_tiles`` tiles from the cells of a centred grid, each jittered inside the slack.
 
     Returns (tiles, info) where info counts candidates rejected by the foreground filter."""
