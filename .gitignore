@@ -16,3 +16,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 wandb/
+*.tar
+*.pth
+*.safetensors
+*.pkl
+*.idx.json
+shards/
+tb/
+*.log

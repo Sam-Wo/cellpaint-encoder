@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cellpaint-encoder"
+version = "0.1.0"
+description = "Self-supervised DINO ViT-S/16 encoder for 5-channel Cell Painting (JUMP-CP), with position- and batch-controlled evaluation."
+requires-python = ">=3.11"
+readme = "README.md"
+# Exact pins live in requirements.txt (one set that installs on Linux/Windows, CPython 3.11-3.13).
+dependencies = [
+    "numpy", "pandas", "pyarrow", "scipy", "scikit-learn", "pyyaml", "requests",
+    "zstandard", "tifffile", "imagecodecs", "torch",
+]
+
+[project.optional-dependencies]
+train = ["tensorboard"]
+wandb = ["wandb"]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+# doc-tests of the config and schedule modules run with the unit tests (DESIGN.md 7, CI)
+testpaths = ["tests", "src/cellpaint_encoder/config.py", "src/cellpaint_encoder/train/schedules.py"]
+addopts = "-q --doctest-modules"
+markers = [
+    "network: touches the public S3 bucket (run by hand only)",
+    "gpu: needs CUDA",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B905", "B008"]
