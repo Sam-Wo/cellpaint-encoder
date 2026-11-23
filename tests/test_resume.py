@@ -58,3 +58,22 @@ def test_resume_refuses_other_config(synthetic_shards, tmp_path):
         raise AssertionError("should refuse a checkpoint from another config")
     except ValueError:
         pass
+
+
+def test_sigterm_stop_checkpoints_and_resumes_identically(synthetic_shards, tmp_path):
+    """The pre-emption path pod.sh relies on: stop flag -> checkpoint at that step -> 'signal'
+    (train.py turns it into exit code 75) -> resume -> same final state as an uninterrupted run."""
+    cfg = _cfg(synthetic_shards, tmp_path, ["run.ckpt_every_steps=0", "run.keep_last=2"])
+    ref = Trainer(cfg, tmp_path / "ref", install_signals=False)
+    ref.train(resume=None)
+    st_ref = ref.state_dict()
+
+    t1 = Trainer(cfg, tmp_path / "pre", install_signals=False)
+    t1.stop.flag = True  # as if SIGTERM arrived during the first step
+    out = t1.train(resume=None)
+    assert out["stopped"] == "signal" and out["step"] == 1
+    assert (tmp_path / "pre" / "ckpt-step000000001.pt").exists()
+    t2 = Trainer(cfg, tmp_path / "pre", install_signals=False)
+    assert t2.train(resume="auto")["stopped"] == "schedule_done"
+    eq = state_equal(st_ref, t2.state_dict())
+    assert all(eq.values()), eq

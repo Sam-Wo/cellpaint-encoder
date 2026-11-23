@@ -40,7 +40,9 @@ with_gpu_log() {  # $1 = run dir; rest = command
 
 case "$STAGE" in
   setup)
-    python -m venv .venv && . .venv/bin/activate
+    PY=${PYTHON:-python3}
+    $PY -c 'import sys; assert sys.version_info >= (3, 11), f"Python >= 3.11 required, found {sys.version.split()[0]}: use a 3.11+ image or set PYTHON=python3.11"'
+    $PY -m venv .venv && . .venv/bin/activate
     pip install --upgrade pip
     pip install torch==2.10.0 --index-url "$TORCH_INDEX"
     grep -v '^torch==' requirements.txt > /tmp/req.txt && pip install -r /tmp/req.txt

@@ -14,7 +14,7 @@ Before G1: freeze `PREREG.md` (a copy of DESIGN.md §6 plus the evaluation rules
 
 - **Pod:**
   - RunPod Secure Cloud, 1× A100 SXM 80 GB ($2.19/h; check the price on launch day);
-  - template "RunPod PyTorch" (Ubuntu 22.04, Python 3.10/3.11, CUDA 12.x);
+  - template "RunPod PyTorch" with **Python ≥ 3.11** (the pins need it; `setup` aborts on 3.10: pick a py3.11 image or set `PYTHON=python3.11` after `apt install python3.11-venv`), CUDA 12.x;
   - **≥ 16 vCPU** if offered: the cache build is CPU-bound (§5);
   - container disk 50 GB.
 - **Network volume:** 500 GB at $0.07/GB-month (300 GB for the cut-down), mounted at `/workspace`, in the same region as the pod.
@@ -94,7 +94,7 @@ Costs are the planning numbers of DESIGN §5.3 at $2.19/h, given as **cumulative
 | G-B baselines | `bash scripts/pod.sh baselines`; CellProfiler: `python scripts/evaluate.py --config configs/full.yaml --cellprofiler-gallery --out results/dev_cp` (CPU, 6.1 GB of profiles); DeepCellMorpho/OpenPhenom: §4 | GPU pod, or CPU for CP | the harness reproduces ShapeShift's CellProfiler replicate AUC within ±0.02 on the same wells; the §2 fidelity gates pass, or the failure is flagged. **source_6 stays locked** (no `eval.unlock_heldout`) | ≤ 24 |
 | **G1 pilot** | **`bash scripts/pod.sh pilot`** | GPU pod (A100 SXM) | `results/g1_report.txt` (from `scripts/check_gates.py g1`): throughput ≥ 250/s; data_wait < 10%; GPU busy ≥ 85%; no collapse (teacher entropy away from 0 and from log K; feat_std > 0.1× initial); dev cross-source mAP ≥ ImageNet-frozen + 0.01 (one dev evaluation at the end of epoch 1). The report also prints the plan tier implied by the throughput | ≤ 31 |
 | H100 benchmark | `python scripts/train.py --config configs/pilot.yaml --run-dir runs/h100_bench --resume none run.max_minutes=30` on an H100 PCIe pod (after `setup`; copy `data/` from the volume); compare `samples_per_s` with the A100 | H100 PCIe pod, 30 min | switch if its $/sample is ≥ 10% lower: (2.89 / sps_H100) ≤ 0.9 × (2.19 / sps_A100) | ≤ 33 |
-| Main run, seed 0 | `bash scripts/pod.sh main` (resumes the pilot checkpoint: same config hash) | GPU pod | **G2 at epoch 25:** `python scripts/check_gates.py g2 --run runs/full_seed0 --cellprofiler-dev results/dev_cp/results.json`. Fail → stop, keep the checkpoint, skip seed 1 and the ablations, write the evaluation study. **G3 at epoch 100:** dev metrics at epoch 100 ≥ epoch 50 (`runs/full_seed0/dev_log.csv`); else use the best dev checkpoint (the `ckpt-epoch*` files) by dev cross-source mAP | G2: ≤ 55; end: ≤ 118 |
+| Main run, seed 0 | `bash scripts/pod.sh main` (resumes the pilot checkpoint: same config hash) | GPU pod | **G2 at epoch 25:** first score CellProfiler on exactly the dev-cache wells, `python scripts/evaluate.py --config configs/full.yaml --cellprofiler-gallery --restrict-to-dev-cache --out results/dev_cp_devwells`, then `python scripts/check_gates.py g2 --run runs/full_seed0 --cellprofiler-dev results/dev_cp_devwells/results.json`. Fail → stop, keep the checkpoint, skip seed 1 and the ablations, write the evaluation study. **G3 at epoch 100:** dev metrics at epoch 100 ≥ epoch 50 (`runs/full_seed0/dev_log.csv`); else use the best dev checkpoint (the `ckpt-epoch*` files) by dev cross-source mAP | G2: ≤ 55; end: ≤ 118 |
 | Seed 1 | `bash scripts/pod.sh seed1` | GPU pod | only if G1 throughput ≥ 250/s (200–250/s: add `optim.epochs=50`) | ≤ 203 |
 | Ablations | `bash scripts/pod.sh abl_natural_mix`, `abl_perimage_norm` (builds its own per-image cache first), `abl_scratch` | GPU pod (Community Cloud is fine) | 25 epochs each | ≤ 267 |
 | Final scoring | §3.1 | GPU pod, about 4 h | once, all methods, `eval.unlock_heldout=true` | ≤ 276, plus storage ≈ 53 → **≈ 325 + 25 contingency** |
@@ -235,9 +235,13 @@ The planning rates in DESIGN §5.2 (A100 280/s, H100 PCIe 420/s) stay **[E]**.
 ## 7. Known gaps and decisions
 
 - PREREG.md and the `prereg-v1` tag are not created.
-- `resample_um_per_px` is not implemented (§4).
+- `resample_um_per_px` is not implemented (§4); a non-null value raises in `write_shards`/`embed`.
 - The DeepCellMorpho and OpenPhenom adapters are tested only against stubs of their documented interfaces.
 - The gallery EfficientNet folder name is unverified.
+- **Never run yet:** Linux-only paths (`os.pread`, fork-started loader workers, a real SIGTERM), CI on Python 3.11 (the first push is its first run), the `cu128` torch 2.10.0 wheel, any CUDA code path.
+- **M4 target-annotation mAP** is not wired (needs a Target-2 target table); M4 cross-source compound retrieval is.
+- **Dev-cache DMSO reference (needs a decision):** the dev cache keeps 4 DMSO wells per plate (DESIGN §1.3), so in-training dev metrics z-score against 4 wells, while §4.6 uses 16. G1(c) is internally consistent (ImageNet is scored on the same cache by `dev_eval.py`); G2 scores CellProfiler on the dev-cache wells with `--restrict-to-dev-cache`. Raising the dev cache to 16 DMSO wells per plate costs about +12 GB of cache.
+- **Scoping choices made in code:** M1-M3 and the ShapeShift hook use `eval.m1_sources` = sources 2, 3, 6, 8 (§4.3); the dev cache uses `data.dev_sources` = 2, 3, 8 (§1.3); the primary references and M6 include source_10.
 
 ---
 

@@ -1,6 +1,6 @@
 # Exact pins. One set that installs on CPython 3.11-3.13, Linux x86_64 and Windows.
-# (tifffile/imagecodecs are pinned to the last releases that still support Python 3.11,
-#  because RunPod/AWS PyTorch images commonly ship 3.10/3.11 and CI runs 3.11.)
+# Python >= 3.11 is REQUIRED (scipy 1.16, scikit-learn 1.8, tifffile 2026.3). tifffile/imagecodecs are
+# pinned to their last releases supporting 3.11, so pod images with Python 3.11 work; 3.10 does not.
 # torch: CPU wheel in CI and on laptops (--index-url https://download.pytorch.org/whl/cpu);
 #        on the GPU pod install the CUDA build of the SAME version (see RUNBOOK.md).
 numpy==2.2.6
