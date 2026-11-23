@@ -188,6 +188,8 @@ If the spread is above 15%, set `data.resample_um_per_px` **before the pilot**. 
 
 Measured on the development laptop: Ryzen 7 5800X3D (8 cores, 16 threads), Windows, Python 3.13, CPU torch 2.10. The data were the 12 real smoke sites (8 from source_2, 4 from source_3, which is LZW-compressed).
 
+**Caveat:** an unrelated CPU-heavy job (15 worker processes) started on the same machine at 10:17, part-way through these measurements. The loader and threaded cache numbers were taken before it. The multi-process cache numbers and the CPU step number may be depressed by it, so the multi-process scaling below is a **lower bound**. Re-run `bench_io.py cache` on the pod in any case.
+
 | Quantity | Measured | Implication for the GPU run |
 |---|---|---|
 | Training-loader decode (zstd + `.npy`, 0.65 MB per 448² tile, page-cached) | **≈ 300 samples/s per worker** (265 with 0 workers, 650 with 2, 1,215 with 4) | CPU decode is not a bottleneck at 280/s: 2 workers suffice, and the 10 planned workers leave a wide margin. **Disk/volume random-read speed is not measured** (page cache); run the `loader` benchmark on the pod. |
@@ -265,7 +267,8 @@ py -3.13 -I -X utf8 scripts/evaluate.py --config configs/smoke_cpu.yaml --out ru
 - per plate: 1 training well, 2 shared anchor compounds and 1 DMSO well;
 - training: 6 tiles of 448².
 
-**Result on 2026-11-23:**
-- 40 optimiser steps (micro-batch 2, accumulation 2, drop-path 0.1, 2 loader workers) in 87 s.
-- Hard-killed at step 23 and resumed from step 20: the final student, teacher, optimiser and center are **bitwise identical** to the uninterrupted run, as are all 40 log rows.
+**Result on 2026-11-23, re-run from the final commit:**
+- No network bytes were used: the byte cap was set to 1 and everything came from the local mirror.
+- 40 optimiser steps (micro-batch 2, accumulation 2, drop-path 0.1, 2 loader workers) in 189 s, on a CPU shared with another job; an unloaded earlier run took 87 s.
+- Hard-killed (`taskkill /F /T`) after logged step 23 and resumed with `--resume auto` from `ckpt-step20`: the final student, teacher, optimiser and DINO center are **bitwise identical** to the uninterrupted run, as are all 40 log rows (loss, grad norm, entropies, lr).
 - Embedding and evaluation run end to end. The metrics are degenerate at this size, as expected: one DMSO well per plate, and the two source_2 plates share a platemap, so M1 has no units.
