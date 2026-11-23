@@ -144,3 +144,67 @@ def test_train_shard_index_has_no_masked_well(world, tmp_path):
     idx = tr[["source", "plate", "well", "site"]].assign(tile=0)
     masked = m[m.is_anchor | m.eval_dmso | (m.source == "source_6")][["plate", "well"]]
     assert idx.merge(masked, on=["plate", "well"]).empty
+
+
+def test_e2_e3_e4_rows_and_references(world):
+    anchor, ld = world
+    low = []
+    for p in range(2):
+        plate = f"source_7_p{p}"
+        ld[plate] = fake_load_data("source_7", "R1", plate)
+        for i, w in enumerate(["A01", "A02"]):
+            low.append(
+                {
+                    "source": "source_7",
+                    "batch": "R1",
+                    "plate": plate,
+                    "well": w,
+                    "compound_id": f"CPD{i}",
+                    "is_dmso": False,
+                }
+            )
+        for w in ["D01", "D02", "D03", "D04", "D05"]:
+            low.append(
+                {
+                    "source": "source_7",
+                    "batch": "R1",
+                    "plate": plate,
+                    "well": w,
+                    "compound_id": "DMSO",
+                    "is_dmso": True,
+                }
+            )
+    extra = pd.DataFrame(
+        [
+            {"source": "source_3", "batch": "T", "plate": "t2", "eval_set": "E3"},
+            {"source": "source_3", "batch": "D", "plate": "dm", "eval_set": "E4"},
+        ]
+    )
+    t2 = fake_load_data("source_3", "T", "t2")
+    t2["compound_id"] = np.where(t2.col < 2, "JCP2022_033924", "T2CPD" + t2.col.astype(str))
+    t2["is_dmso"] = t2.compound_id == "JCP2022_033924"
+    ld["t2"], ld["dm"] = t2, fake_load_data("source_3", "D", "dm")
+    m = build_manifest(cfg(), anchor, ld, anchor_low=pd.DataFrame(low), extra_plates=extra)
+    for es in ("E2", "E3", "E4"):
+        rows = m[m.eval_set == es]
+        assert len(rows) and not rows.train.any() and not rows.dev.any()
+        assert (rows.groupby("plate").eval_dmso.any()).all()  # every plate has a z-score reference
+        assert m[(m.eval_set == es) & m.norm].plate.nunique() == rows.plate.nunique()
+    assert set(m[m.eval_set == "E2"].source) == {"source_7"}
+    assert m[m.eval_set == "E4"].is_dmso.all()
+    assert (m[m.eval_set == "E3"].groupby("well").site.nunique() <= cfg().extra_sites_per_well).all()
+
+
+def test_written_index_leak_check(world):
+    from cellpaint_encoder.data.manifest import check_train_index
+
+    anchor, ld = world
+    c = cfg()
+    m = build_manifest(c, anchor, ld)
+    idx = m[m.train][["source", "plate", "well", "site"]]
+    check_train_index(idx, m, c)  # clean
+    leak = pd.concat([idx, m[m.is_anchor][["source", "plate", "well", "site"]].head(1)])
+    with pytest.raises(AssertionError):
+        check_train_index(leak, m, c)
+    with pytest.raises(AssertionError):
+        check_train_index(m[m.source == "source_6"][["source", "plate", "well", "site"]].head(2), m, c)

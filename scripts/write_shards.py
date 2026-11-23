@@ -33,7 +33,7 @@ import pandas as pd
 
 from cellpaint_encoder.config import load_config
 from cellpaint_encoder.data.gallery import Gallery
-from cellpaint_encoder.data.manifest import _rng
+from cellpaint_encoder.data.manifest import _rng, check_train_index
 from cellpaint_encoder.data.normalize import normalise_site
 from cellpaint_encoder.data.plate_norm import compute_plate_norms
 from cellpaint_encoder.data.shards import ShardWriter
@@ -101,6 +101,8 @@ def main():
     a = ap.parse_args()
     cfg = load_config(a.config, a.overrides)
     dc = cfg.data
+    if dc.resample_um_per_px is not None:
+        raise NotImplementedError("data.resample_um_per_px (R7) is not implemented yet; see RUNBOOK 4")
     m = pd.read_parquet(dc.manifest)
     g = Gallery(mirror=dc.raw_mirror, byte_cap=dc.byte_cap)
     il = IllumCache(g, max_plates=4)
@@ -170,6 +172,8 @@ def main():
             else:
                 st["site_size"] = dc.dev_site_size
             idx = w.close(st)
+            if kind == "train":
+                check_train_index(idx, m, dc)  # leakage check on what was written (R8)
             st["samples_written"] = len(idx)
             summary[kind] = st
     n_sites = sum(summary.get(k, {}).get("sites", 0) for k in ("train", "dev"))

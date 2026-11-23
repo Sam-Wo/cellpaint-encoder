@@ -72,6 +72,8 @@ def main():
     ap.add_argument("overrides", nargs="*")
     a = ap.parse_args()
     cfg = load_config(a.config, a.overrides)
+    if cfg.data.resample_um_per_px is not None:
+        raise NotImplementedError("data.resample_um_per_px (R7) is not implemented yet; see RUNBOOK 4")
     if cfg.run.threads:
         torch.set_num_threads(cfg.run.threads)
     device = resolve_device(cfg.run.device)

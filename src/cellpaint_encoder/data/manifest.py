@@ -135,7 +135,7 @@ def _plate_rows(
         ev &= _first_sites(d, cfg.eval_sites_per_well, _rng(seed, "evsites", plate))
     if source in cfg.eval_sources or eval_set == "E2":
         d.loc[ev, "eval_set"] = eval_set
-        if eval_set == "E1" and source in cfg.train_sources and source != cfg.heldout_source:
+        if eval_set == "E1" and source in cfg.dev_sources and source != cfg.heldout_source:
             d.loc[ev & (d.is_anchor | d.dev_dmso), "dev"] = True
     # per-plate normalisation sites: drawn from the evaluation DMSO sites (downloaded anyway for E1)
     cand = d.index[d.eval_dmso & ev].to_numpy()
@@ -173,10 +173,19 @@ def _extra_rows(cfg: DataCfg, ld: pd.DataFrame, eval_set: str, seed: int) -> pd.
     d["plate_split"] = "eval_only"
     for c in ROLE_COLS:
         d[c] = "" if c == "eval_set" else False
-    keep = _first_sites(d, cfg.extra_sites_per_well, _rng(seed, "extra", d.plate.iloc[0]))
+    plate = d.plate.iloc[0]
+    keep = _first_sites(d, cfg.extra_sites_per_well, _rng(seed, "extra", plate))
     d.loc[keep, "eval_set"] = eval_set
     if eval_set == "E4":
         d["is_dmso"] = True
+    d["is_dmso"] = d["is_dmso"].astype(bool)
+    # per-plate z-score reference, as for E1: n_eval_dmso DMSO wells, norm sites among their sites
+    dmso_wells = sorted(d.loc[d.is_dmso & keep, "well"].unique())
+    _rng(seed, "dmso", plate).shuffle(dmso_wells)
+    d["eval_dmso"] = d.well.isin(set(dmso_wells[: cfg.n_eval_dmso_per_plate]))
+    cand = d.index[d.eval_dmso & keep].to_numpy()
+    if len(cand):
+        d.loc[_rng(seed, "norm", plate).permutation(cand)[: cfg.norm_sites_per_plate], "norm"] = True
     return d
 
 
@@ -222,3 +231,18 @@ def check_manifest(m: pd.DataFrame, cfg: DataCfg) -> None:
         pass  # allowed: dev uses anchor wells on any training-source plate (S-plate diagnostics use them)
     if m.duplicated(["plate", "well", "site"]).any():
         raise AssertionError("duplicate sites in the manifest")
+
+
+def check_train_index(index: pd.DataFrame, m: pd.DataFrame, cfg: DataCfg) -> None:
+    """Leakage check on what was actually written to the training shards (R8): no anchor or
+    evaluation-DMSO well, no held-out plate, no held-out or non-training source."""
+    if cfg.heldout_source in set(index.source):
+        raise AssertionError(f"{cfg.heldout_source} tiles in the training shards")
+    if not set(index.source) <= set(cfg.train_sources):
+        raise AssertionError("training shards hold tiles of a non-training source")
+    bad = m[m.is_anchor | m.eval_dmso | (m.plate_split != "train")][["plate", "well"]].drop_duplicates()
+    leak = index[["plate", "well"]].merge(bad, on=["plate", "well"])
+    if len(leak):
+        raise AssertionError(
+            f"{len(leak)} masked or held-out wells in the training shards, e.g. {leak.iloc[0].to_dict()}"
+        )

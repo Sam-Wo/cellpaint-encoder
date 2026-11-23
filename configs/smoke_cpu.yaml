@@ -5,6 +5,7 @@ data:
   plates: ["1086292082", "1086292433", "BR5872d3"]
   train_sources: [source_2, source_3]
   eval_sources: [source_2, source_3]
+  dev_sources: [source_2, source_3]
   heldout_plate_frac: 0.0
   sites_per_well: 1
   max_train_wells_per_plate: 1
@@ -50,6 +51,7 @@ eval:
   dev_query_sources: [source_3]
   dev_reference_sources: [source_2]
   reference_sources: [source_2]
+  m1_sources: [source_2, source_3]
   query_source: source_3
   n_boot: 1000
   n_null: 200

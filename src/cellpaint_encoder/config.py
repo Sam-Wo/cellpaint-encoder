@@ -34,6 +34,7 @@ class DataCfg:
     train_sources: tuple[str, ...] = ("source_2", "source_3", "source_8", "source_10")
     heldout_source: str = "source_6"  # never trained on; metrics locked (4.1)
     eval_sources: tuple[str, ...] = ("source_2", "source_3", "source_8", "source_10", "source_6")
+    dev_sources: tuple[str, ...] = ("source_2", "source_3", "source_8")  # dev cache (1.3)
     excluded_sources: tuple[str, ...] = ("source_15", "source_7")  # 15: no RNA; 7: eval-only (dose)
     plates: tuple[str, ...] = ()  # explicit plate list (smoke); empty = every anchor-hosting plate
     manifest_seed: int = 0  # fixes plate split, site choice, DMSO subsets (same for every training seed)
@@ -185,6 +186,8 @@ class EvalCfg:
     dev_query_sources: tuple[str, ...] = ("source_2", "source_3", "source_8")
     dev_reference_sources: tuple[str, ...] = ("source_2", "source_3", "source_8")
     reference_sources: tuple[str, ...] = ("source_2", "source_3", "source_8", "source_10")
+    m1_sources: tuple[str, ...] = ("source_2", "source_3", "source_6", "source_8")  # M1-M3 (4.3)
+    low_dose_source: str = "source_7"  # M5 queries (E2)
     query_source: str = "source_6"
     unlock_heldout: bool = False  # source_6 metrics stay locked until the final scoring
     eps_grid: tuple[float, ...] = (0.1, 1.0, 3.0, 10.0)
