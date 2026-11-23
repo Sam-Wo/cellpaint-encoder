@@ -1,0 +1,66 @@
+# Full plan (DESIGN.md 0, 1.2, 3.2): sources 2/3/8/10, source_6 held out, 100 epochs x 357,132 tiles.
+# Defaults live in src/cellpaint_encoder/config.py; the values that define the plan are repeated here.
+data:
+  anchor_wells: data/anchor/anchor_wells_high.parquet
+  anchor_wells_low: data/anchor/anchor_wells_low.parquet
+  plate_table: null              # set to JUMP metadata/plate.csv.gz to add E3 (Target-2) / E4 (DMSO plates)
+  jump_wells: null               # JUMP metadata/well.csv.gz (DMSO identity of non-anchor wells, E3 compounds)
+  train_sources: [source_2, source_3, source_8, source_10]
+  heldout_source: source_6
+  eval_sources: [source_2, source_3, source_8, source_10, source_6]
+  excluded_sources: [source_15, source_7]
+  heldout_plate_frac: 0.2
+  sites_per_well: 3
+  n_eval_dmso_per_plate: 16
+  n_dev_dmso_per_plate: 4
+  norm_sites_per_plate: 64
+  norm_mode: per_plate_dmso
+  tile_size: 448
+  tiles_per_site: 2
+  fg_min: 0.01
+  raw_mirror: null               # no local mirror of raw TIFFs on the pod: stream once
+  s3_workers: 64
+  manifest: data/manifest.parquet
+  shards_dir: data/shards/train
+  dev_shards_dir: data/shards/dev
+  balance: source
+  dmso_cap: 0.2
+  num_workers: 10
+  prefetch_factor: 4
+model:
+  arch: vit_small
+  drop_path: 0.1
+  init: imagenet_dino
+  init_weights: data/weights/dino_deitsmall16_pretrain.pth
+dino:
+  out_dim: 65536
+  warmup_teacher_temp: 0.04
+  teacher_temp: 0.07
+  warmup_teacher_temp_epochs: 30
+  momentum_teacher: 0.996
+  freeze_last_layer_epochs: 1
+  global_crop_size: 224
+  local_crop_size: 96
+  n_local_crops: 6
+optim:
+  epochs: 100
+  batch_size: 256
+  accum_steps: 1
+  base_lr: 5.0e-4
+  min_lr: 1.0e-6
+  warmup_epochs: 10
+  weight_decay: 0.04
+  weight_decay_end: 0.4
+  clip_grad: 3.0
+run:
+  name: full
+  seed: 0
+  device: auto
+  precision: bf16
+  ckpt_every_minutes: 30
+  keep_last: 2
+  keep_every_epochs: 25
+  log_every_steps: 50
+eval:
+  dev_every_epochs: 10
+  moa_table: data/anchor/moa.csv

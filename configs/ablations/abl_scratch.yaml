@@ -1,0 +1,6 @@
+# A3: random initialisation instead of ImageNet DINO, 25 epochs.
+base: ../full.yaml
+model: {init: random}
+optim: {epochs: 25, warmup_epochs: 3}
+dino: {warmup_teacher_temp_epochs: 8}
+run: {name: abl_scratch}

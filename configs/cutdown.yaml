@@ -1,0 +1,14 @@
+# Cut-down plan (DESIGN.md 0, 1.2): sources 2/3/8, 2 sites per well, 80 epochs x 202,892 tiles.
+base: full.yaml
+data:
+  train_sources: [source_2, source_3, source_8]
+  eval_sources: [source_2, source_3, source_8, source_6]
+  sites_per_well: 2
+  e4_sources: [source_3]
+  e4_plates_per_source: 2
+eval:
+  reference_sources: [source_2, source_3, source_8]
+optim:
+  epochs: 80
+run:
+  name: cutdown

@@ -1,0 +1,55 @@
+# CPU smoke test on a handful of real JUMP sites (3 plates in 2 sources, 12 sites).
+# Masking stays on: trains on non-anchor wells only; evaluates source_3 queries against source_2.
+base: full.yaml
+data:
+  plates: ["1086292082", "1086292433", "BR5872d3"]
+  train_sources: [source_2, source_3]
+  eval_sources: [source_2, source_3]
+  heldout_plate_frac: 0.0
+  sites_per_well: 1
+  max_train_wells_per_plate: 1
+  eval_compounds: [JCP2022_026844, JCP2022_046839]
+  eval_sites_per_well: 1
+  n_eval_dmso_per_plate: 1
+  n_dev_dmso_per_plate: 1
+  norm_sites_per_plate: 1
+  raw_mirror: data/raw
+  byte_cap: 300.0e6
+  s3_workers: 8
+  manifest: data/smoke/manifest.parquet
+  shards_dir: data/smoke/shards/train
+  dev_shards_dir: data/smoke/shards/dev
+  shard_max_bytes: 2.0e6        # several small shards, to exercise shard boundaries
+  num_workers: 2
+  prefetch_factor: 2
+  pin_memory: false
+dino:
+  out_dim: 1024
+  hidden_dim: 256
+  bottleneck_dim: 64
+  global_crop_size: 64
+  local_crop_size: 32
+  n_local_crops: 2
+  warmup_teacher_temp_epochs: 2
+optim:
+  epochs: 10
+  batch_size: 4
+  accum_steps: 2
+  warmup_epochs: 1
+run:
+  name: smoke_cpu
+  device: cpu
+  precision: fp32
+  epoch_size: 16              # 4 optimiser steps per epoch -> 40 steps in total
+  ckpt_every_steps: 10
+  log_every_steps: 1
+  threads: 4
+eval:
+  dev_every_epochs: 0
+  batch_size: 16
+  dev_query_sources: [source_3]
+  dev_reference_sources: [source_2]
+  reference_sources: [source_2]
+  query_source: source_3
+  n_boot: 1000
+  n_null: 200

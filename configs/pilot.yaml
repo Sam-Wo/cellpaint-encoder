@@ -1,0 +1,10 @@
+# G1 pilot (DESIGN.md 5.4): the full-plan model and schedule, stopped after 2 h of wall clock.
+# The LR/temperature/momentum schedules are those of the 100-epoch run (max_minutes does not
+# change them), so the pilot measures exactly the throughput and early dynamics of the main run.
+base: full.yaml
+run:
+  name: pilot
+  max_minutes: 120
+  ckpt_every_minutes: 30
+eval:
+  dev_every_epochs: 1          # one dev evaluation at the end of the first epoch (~25 min at 250/s)

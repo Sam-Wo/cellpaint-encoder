@@ -1,0 +1,6 @@
+# A1: natural source proportions instead of source-balanced batches, 25 epochs.
+base: ../full.yaml
+data: {balance: natural}
+optim: {epochs: 25, warmup_epochs: 3}
+dino: {warmup_teacher_temp_epochs: 8}
+run: {name: abl_natural_mix}

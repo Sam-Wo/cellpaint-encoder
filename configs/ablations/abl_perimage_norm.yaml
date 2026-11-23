@@ -1,0 +1,7 @@
+# A2: per-image percentile normalisation (DeepCellMorpho style) instead of per-plate DMSO; needs its
+# own tile cache (data.shards_dir) because normalisation happens at cache time.
+base: ../full.yaml
+data: {norm_mode: per_image, shards_dir: data/shards/train_perimage}
+optim: {epochs: 25, warmup_epochs: 3}
+dino: {warmup_teacher_temp_epochs: 8}
+run: {name: abl_perimage_norm}
