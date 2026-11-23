@@ -117,3 +117,54 @@ def test_pipeline_end_to_end_and_source6_lock():
     un = evaluate_wells(meta, X, _cfg(["eval.unlock_heldout=true"]))
     assert "source_6" in set(un["_meta"].source) and un["primary"]["mAP"] > 0.8
     assert un["primary_strict"]["n_groups"] <= un["primary"]["n_groups"]
+
+
+def test_cellprofiler_gallery_path_synthetic():
+    """from_profiles + prepare_cellprofiler (the real P1 baseline path) on synthetic plate profiles."""
+    from cellpaint_encoder.eval.cellprofiler import from_profiles, prepare_cellprofiler
+
+    rng = np.random.default_rng(0)
+    meta, _ = make_wells(sources=("source_2", "source_3"), n_dmso=10, seed=3)
+    n = len(meta)
+    feats = {f"Cells_F{i}": rng.normal(size=n) for i in range(12)}
+    feats["Cells_dup"] = feats["Cells_F0"] * 3 + 1e-4 * rng.normal(size=n)
+    feats["Cells_const"] = np.ones(n)
+    feats["Cells_nan"] = np.where(rng.random(n) < 0.2, np.nan, 1.0)
+    feats[BLOCKLIST[3]] = rng.normal(size=n)
+    prof = pd.DataFrame(
+        {"Metadata_Source": meta.source, "Metadata_Plate": meta.plate, "Metadata_Well": meta.well, **feats}
+    )
+    prof.loc[prof.Metadata_Source == "source_3", "Cells_F11"] = np.nan  # feature missing in one source
+    m, X, names = from_profiles(prof, meta)
+    assert len(m) == n and "Cells_F11" not in names
+    ref = m.eval_dmso.to_numpy()
+    Xs, sel, info = prepare_cellprofiler(m, X, names, ref, ref & (m.source == "source_2").to_numpy())
+    assert Xs.shape == (n, len(sel)) and np.isfinite(Xs).all()
+    assert "Cells_const" not in sel and "Cells_nan" not in sel and BLOCKLIST[3] not in sel
+    assert ("Cells_F0" in sel) != ("Cells_dup" in sel)
+
+
+def test_pipeline_m4_m5_e4_and_e1_scoping():
+    meta, X = make_wells(sources=("source_2", "source_3", "source_8"), cpd_signal=4.0, n_dmso=10, seed=8)
+    low, XL = make_wells(sources=("source_7",), cpd_signal=4.0, n_dmso=10, seed=8)  # same compound directions
+    low["eval_set"] = "E2"
+    t2, XT = make_wells(sources=("source_2", "source_3"), cpd_signal=4.0, n_dmso=10, seed=9)
+    t2["eval_set"], t2["is_anchor"] = "E3", False
+    t2["compound_id"] = t2.compound_id.str.replace("CPD", "T2_")
+    t2["plate"] = t2.plate + "_T2"
+    d4, X4 = make_wells(sources=("source_3",), n_dmso=30, seed=10, cpd_signal=0.0)
+    d4 = d4[d4.is_dmso]
+    X4 = X4[d4.index.to_numpy()]
+    d4 = d4.assign(eval_set="E4", plate=d4.plate + "_E4").reset_index(drop=True)
+    allm = pd.concat([meta, low, t2, d4], ignore_index=True)
+    allX = np.concatenate([X, XL, XT, X4])
+    cfg = _cfg(["eval.m1_sources=[source_2, source_3, source_8]"])
+    res = evaluate_wells(allm, allX, cfg)
+    assert res["M5_cross_dose"]["mAP"] > 0.8  # low-dose queries find their 10 uM compound
+    assert res["M4_target2"]["mAP"] > 0.8 and res["M4_target2"]["n_groups"] > 0
+    assert "position_probe_E4" in res
+    # E1 metrics ignore E2-E4 rows: same M1 as on E1 alone (eps fixed so post-processing is the only coupling)
+    only = evaluate_wells(meta, X, cfg, eps=1.0, which=("m1",))
+    both = evaluate_wells(allm, allX, cfg, eps=1.0, which=("m1",))
+    assert set(both["_tables"]["M1"].source) <= {"source_2", "source_3", "source_8"}
+    assert abs(only["M1"]["mAP"] - both["M1"]["mAP"]) < 0.2

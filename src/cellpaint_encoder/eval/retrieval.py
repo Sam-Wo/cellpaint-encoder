@@ -229,6 +229,8 @@ def label_retrieval(
 
     q = _queries(meta, U, qidx, cand, lab.astype(str))
     per, summ = summarise(q, ["label"], n_null, seed)
+    if len(q):
+        q["query"] = idx[q["query"].to_numpy()]  # back to the caller's row index
     summ["n_classes"] = len(big)
     summ["mean_ap_over_queries"] = float(q.ap.mean()) if len(q) else float("nan")
     return per, summ, q

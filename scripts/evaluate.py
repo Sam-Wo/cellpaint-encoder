@@ -99,6 +99,13 @@ def per_compound_primary(res: dict) -> pd.Series:
     return t.set_index(t.query_source + "|" + t.compound_id).mAP
 
 
+def _q(res: dict, table: str, keys: list[str], col: str = "mAP") -> pd.Series:
+    t = res["_tables"].get(table, pd.DataFrame())
+    if t.empty:
+        return pd.Series(dtype=float)
+    return t.set_index(t[keys].astype(str).agg("|".join, axis=1))[col]
+
+
 def per_unit(res: dict, name: str) -> pd.Series:
     t = res["_tables"].get(name, pd.DataFrame())
     if t.empty:
@@ -115,11 +122,18 @@ def main():
     ap.add_argument("--sets", default="E1")
     ap.add_argument("--ours", default="ours", help="name of our representation in --rep")
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--restrict-to-dev-cache",
+        action="store_true",
+        help="score only the wells in data.dev_shards_dir (G2: same wells as the in-training dev eval)",
+    )
     ap.add_argument("overrides", nargs="*")
     a = ap.parse_args()
     cfg = load_config(a.config, a.overrides)
     sets = a.sets.split(",")
     m = pd.read_parquet(cfg.data.manifest)
+    if not cfg.eval.unlock_heldout:  # lock source_6 before anything, incl. CellProfiler feature selection
+        m = m[m.source != cfg.data.heldout_source]
     moa = (
         pd.read_csv(cfg.eval.moa_table) if cfg.eval.moa_table and Path(cfg.eval.moa_table).exists() else None
     )
@@ -135,6 +149,10 @@ def main():
     # identical wells: intersect the well sets of all representations
     key = lambda d: set(d.source + "|" + d.plate + "|" + d.well)  # noqa: E731
     common = set.intersection(*(key(r[0]) for r in reps.values())) if reps else set()
+    if a.restrict_to_dev_cache:
+        from cellpaint_encoder.data.shards import load_index
+
+        common &= key(load_index(cfg.data.dev_shards_dir).astype({"plate": str, "well": str}))
     results, full = {}, {}
     for name, (meta, X, info) in reps.items():
         k = (meta.source + "|" + meta.plate + "|" + meta.well).isin(common).to_numpy()
@@ -168,7 +186,34 @@ def main():
                 "ours": o["position_inflation_M2_minus_M1"],
                 "cellprofiler": full["cellprofiler"]["position_inflation_M2_minus_M1"],
             }
-        fam = {k: v.get("p_wilcoxon", np.nan) for k, v in comps.items() if k.startswith(("P2", "P3"))}
+            c = full["cellprofiler"]
+            for name, s_o, s_c in (
+                (
+                    "M3_moa_vs_cellprofiler",
+                    _q(o, "M3_moa_queries", ["compound_id"], "ap"),
+                    _q(c, "M3_moa_queries", ["compound_id"], "ap"),
+                ),
+                (
+                    "M4_target2_vs_cellprofiler",
+                    _q(o, "M4_target2", ["query_source", "compound_id"]),
+                    _q(c, "M4_target2", ["query_source", "compound_id"]),
+                ),
+                (
+                    "M5_cross_dose_vs_cellprofiler",
+                    _q(o, "M5_cross_dose", ["compound_id"]),
+                    _q(c, "M5_cross_dose", ["compound_id"]),
+                ),
+            ):
+                if len(s_o) and len(s_c):
+                    comps[name] = stats.paired_compound_test(
+                        s_o, s_c, n_boot=cfg.eval.n_boot, seed=cfg.eval.seed
+                    )
+        # Holm family (6.1): P2-P4 and M3-M5. P4 is a point estimate with CI only (no p-value).
+        fam = {
+            k: v.get("p_wilcoxon", np.nan)
+            for k, v in comps.items()
+            if k.startswith(("P2", "P3", "M3", "M4", "M5"))
+        }
         comps["holm_secondaries"] = stats.holm(fam) if fam else {}
     out = write_report(
         results, a.out, {"comparisons": comps, "config": to_dict(cfg), "common_wells": len(common)}
