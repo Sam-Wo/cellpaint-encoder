@@ -234,6 +234,7 @@ NON_SCIENCE_KEYS = {
     "log.wandb",
     "log.wandb_project",
     "eval.batch_size",
+    "eval.dev_every_epochs",  # so the G1 pilot is the first 2 h of the main run (same hash)
 }
 
 

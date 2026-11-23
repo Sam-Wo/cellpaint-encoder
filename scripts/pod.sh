@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# One entry point per RUNBOOK stage, run from the repo root on the pod/instance.
+#   bash scripts/pod.sh setup      # venv, CUDA torch, deps, tests, weights check
+#   bash scripts/pod.sh g0         # manifest + S3 / cache-rate / pixel-size checks (CPU pod is enough)
+#   bash scripts/pod.sh cache      # tile cache + dev cache, then loader benchmark
+#   bash scripts/pod.sh baselines  # dev-cache ImageNet/random baselines (G-B, our side; no source_6 metrics)
+#   bash scripts/pod.sh pilot      # G1: 2 h of the main run + gate report       <- the GPU pilot
+#   bash scripts/pod.sh main       # continue seed 0 to 100 epochs (resumes the pilot)
+#   bash scripts/pod.sh seed1 | abl_natural_mix | abl_perimage_norm | abl_scratch
+# Environment: CFG (default configs/full.yaml), RUN_ROOT (default runs), PROCS (default nproc).
+set -euo pipefail
+STAGE=${1:?stage}
+CFG=${CFG:-configs/full.yaml}
+RUN_ROOT=${RUN_ROOT:-runs}
+PROCS=${PROCS:-$(nproc)}
+TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
+DINO_URL=https://dl.fbaipublicfiles.com/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth
+DINO_SHA=1566d50496f27f52f07fea6094fa29b2fdd6fae89da65bdd3ebc3b24ef6b7eb7
+mkdir -p results "$RUN_ROOT"
+[ "$STAGE" != setup ] && [ -f .venv/bin/activate ] && . .venv/bin/activate
+
+train_loop() {  # restart after pre-emption (exit 75 = stopped by SIGTERM after checkpointing)
+  local rc=75
+  while [ $rc -eq 75 ]; do
+    set +e; python scripts/train.py "$@"; rc=$?; set -e
+    [ $rc -eq 75 ] && echo "pre-empted; resuming in 30 s" && sleep 30
+  done
+  return $rc
+}
+
+with_gpu_log() {  # $1 = run dir; rest = command
+  local run=$1; shift
+  mkdir -p "$run"
+  nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits -l 10 >> "$run/gpu_util.csv" &
+  local smi=$!
+  set +e; "$@"; local rc=$?; set -e
+  kill $smi 2>/dev/null || true
+  return $rc
+}
+
+case "$STAGE" in
+  setup)
+    python -m venv .venv && . .venv/bin/activate
+    pip install --upgrade pip
+    pip install torch==2.10.0 --index-url "$TORCH_INDEX"
+    grep -v '^torch==' requirements.txt > /tmp/req.txt && pip install -r /tmp/req.txt
+    python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name() if torch.cuda.is_available() else '')"
+    pytest -q -x
+    mkdir -p data/weights
+    [ -f data/weights/dino_deitsmall16_pretrain.pth ] || curl -fL -o data/weights/dino_deitsmall16_pretrain.pth "$DINO_URL"
+    echo "$DINO_SHA  data/weights/dino_deitsmall16_pretrain.pth" | sha256sum -c
+    test -f data/anchor/anchor_wells_high.parquet || { echo "MISSING data/anchor/: rsync it from the laptop (RUNBOOK 2.3)"; exit 1; }
+    ;;
+  g0)
+    python scripts/build_manifest.py --config "$CFG"
+    python scripts/bench_io.py s3 --config "$CFG" --seconds 600 --workers 64 | tee results/g0_s3.json
+    python scripts/bench_io.py cache --config "$CFG" --sites 200 --workers "$PROCS" | tee results/g0_cache.json
+    ;;
+  cache)
+    python scripts/write_shards.py --config "$CFG" --procs "$PROCS"
+    python scripts/bench_io.py loader --config "$CFG" --batches 100 | tee results/g0_loader.json
+    ;;
+  baselines)
+    python scripts/dev_eval.py --config "$CFG" --encoder imagenet_dino --out results/dev_imagenet.json
+    python scripts/dev_eval.py --config "$CFG" --encoder random_init --out results/dev_random.json
+    ;;
+  pilot)
+    test -f results/dev_imagenet.json || bash scripts/pod.sh baselines
+    with_gpu_log "$RUN_ROOT/full_seed0" train_loop --config configs/pilot.yaml --run-dir "$RUN_ROOT/full_seed0"
+    python scripts/check_gates.py g1 --run "$RUN_ROOT/full_seed0" --imagenet-dev results/dev_imagenet.json \
+      --gpu-util "$RUN_ROOT/full_seed0/gpu_util.csv" | tee results/g1_report.txt
+    ;;
+  main)
+    with_gpu_log "$RUN_ROOT/full_seed0" train_loop --config "$CFG" --run-dir "$RUN_ROOT/full_seed0"
+    ;;
+  seed1)
+    with_gpu_log "$RUN_ROOT/full_seed1" train_loop --config "$CFG" --run-dir "$RUN_ROOT/full_seed1" run.seed=1
+    ;;
+  abl_natural_mix|abl_scratch|abl_perimage_norm)
+    if [ "$STAGE" = abl_perimage_norm ] && [ ! -f data/shards/train_perimage/index.parquet ]; then
+      python scripts/write_shards.py --config "configs/ablations/$STAGE.yaml" --only train --procs "$PROCS"
+    fi
+    with_gpu_log "$RUN_ROOT/$STAGE" train_loop --config "configs/ablations/$STAGE.yaml" --run-dir "$RUN_ROOT/$STAGE"
+    ;;
+  *) echo "unknown stage $STAGE"; exit 2 ;;
+esac

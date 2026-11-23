@@ -39,6 +39,8 @@ def main():
         dev = dev_eval_hook
     out = tr.train(resume=None if a.resume == "none" else a.resume, dev_eval=dev)
     print(json.dumps(out, indent=1))
+    if out["stopped"] == "signal":  # pre-empted: a wrapper loop should restart with --resume auto
+        sys.exit(75)
 
 
 if __name__ == "__main__":

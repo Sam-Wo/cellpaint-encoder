@@ -73,3 +73,49 @@ def test_per_param_clipping():
     assert total == pytest.approx((50**2 + 0.5**2) ** 0.5, rel=1e-5)
     assert float(a.grad.norm()) == pytest.approx(3.0, rel=1e-4)
     assert float(b.grad.norm()) == pytest.approx(0.5, rel=1e-6)  # untouched
+
+
+def test_in_training_dev_eval_hook(synthetic_shards, tmp_path):
+    """The trainer's dev hook embeds the dev cache with the EMA teacher and logs dev/ metrics."""
+    from cellpaint_encoder.data.shards import ShardWriter
+    from cellpaint_encoder.eval.pipeline import dev_eval_hook
+
+    rng = np.random.default_rng(0)
+    w = ShardWriter(tmp_path / "dev", "dev", 1e9, 1)
+    for s in ("source_2", "source_3", "source_8"):
+        for p in range(2):
+            for i, cpd in enumerate(["C0", "C1", "C2", "DMSO", "DMSO"]):
+                meta = {
+                    "source": s,
+                    "batch": "b",
+                    "plate": f"{s}_{p}",
+                    "well": f"A{i + 1:02d}",
+                    "site": 1,
+                    "row": 0,
+                    "col": i,
+                    "compound_id": cpd,
+                    "is_dmso": cpd == "DMSO",
+                    "is_anchor": cpd != "DMSO",
+                    "eval_dmso": cpd == "DMSO",
+                    "plate_split": "train",
+                }
+                w.write(f"{s}_{p}_{i}", rng.integers(0, 255, (5, 64, 64), dtype=np.uint8), meta)
+    w.close()
+    ov = tiny_overrides(synthetic_shards, tmp_path) + [
+        f"data.dev_shards_dir={(tmp_path / 'dev').as_posix()}",
+        "eval.dev_every_epochs=1",
+        "eval.grid=2",
+        "eval.crop=32",
+        "eval.n_null=20",
+        "optim.epochs=1",
+    ]
+    cfg = load_config(None, ov)
+    Trainer(cfg, tmp_path / "dv", install_signals=False).train(resume=None, dev_eval=dev_eval_hook)
+    dev = pd.read_csv(tmp_path / "dv" / "dev_log.csv")
+    assert (
+        len(dev) == 1
+        and "dev/cross_source_mAP" in dev.columns
+        and np.isfinite(dev["dev/cross_source_mAP"]).all()
+    )
+    train = pd.read_csv(tmp_path / "dv" / "train_log.csv")
+    assert train.loss.notna().all()

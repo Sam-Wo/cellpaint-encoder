@@ -61,3 +61,10 @@ def test_every_config_parses(path):
     cfg = load_config(path)
     assert isinstance(cfg, Config)
     assert cfg.data.heldout_source not in cfg.data.train_sources
+
+
+def test_pilot_is_the_start_of_the_full_run():
+    """Same config hash: the G1 pilot checkpoint resumes straight into the main run."""
+    assert config_hash(load_config(ROOT / "configs/pilot.yaml")) == config_hash(
+        load_config(ROOT / "configs/full.yaml")
+    )
