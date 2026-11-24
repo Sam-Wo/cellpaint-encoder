@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from ...data import resample
 from ...models.vit import VisionTransformer
 from ..encoders import Encoder, SiteContext
 from ..grids import grid_tiles
@@ -106,7 +107,9 @@ class DeepCellMorphoEncoder(Encoder):
 
     def preprocess(self, ctx: SiteContext) -> np.ndarray:
         site = ctx.corrected if self.use_illum else ctx.raw.astype(np.float32)
-        site = site[self.order]
+        # R7: their normalisation is per 480^2 crop, so it cannot precede the crop grid; resample
+        # the (linear) float input instead, then crop at the common pixel size and normalise
+        site = resample.resample_site(site[self.order], ctx.scale)
         tiles = grid_tiles(site, self.crop, self.grid, self.window)
         # their normalisation is per image = per 480^2 crop
         return np.stack([per_image_clip_minmax(t, *self.clip_pct) for t in tiles])

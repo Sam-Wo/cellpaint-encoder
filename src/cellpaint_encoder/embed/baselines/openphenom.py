@@ -18,14 +18,17 @@ import sys
 import numpy as np
 import torch
 
+from ...data import resample
 from ..encoders import Encoder, SiteContext
 from ..grids import grid_tiles
 
 
-def to_uint8_per_image(site: np.ndarray, lo: float = 0.1, hi: float = 99.9) -> np.ndarray:
+def to_uint8_per_image(site: np.ndarray, lo: float = 0.1, hi: float = 99.9, scale: float = 1.0) -> np.ndarray:
+    """Per-image percentile stretch at native resolution, then the R7 resample, clip, round."""
     flat = site.reshape(site.shape[0], -1)
     p_lo, p_hi = np.percentile(flat, [lo, hi], axis=1)
     x = (site - p_lo[:, None, None]) / np.maximum(p_hi - p_lo, 1e-6)[:, None, None]
+    x = resample.resample_site(x, scale)
     return np.rint(np.clip(x, 0, 1) * 255).astype(np.uint8)
 
 
@@ -47,7 +50,7 @@ class OpenPhenomEncoder(Encoder):
 
     def preprocess(self, ctx: SiteContext) -> np.ndarray:
         site = ctx.corrected if self.use_illum else ctx.raw.astype(np.float32)
-        u8 = to_uint8_per_image(site[self.order], *self.pct)
+        u8 = to_uint8_per_image(site[self.order], *self.pct, scale=ctx.scale)
         return grid_tiles(u8, self.crop, self.grid, self.window)
 
     @torch.no_grad()

@@ -22,5 +22,7 @@ def load_backbone(path: str):
 
 
 def build(path: str, device="cpu", name="ours", **kw) -> ViTEncoder:
-    vit, _, mean, std = load_backbone(path)
-    return ViTEncoder(name, vit, mean, std, device, **kw)
+    vit, cfg, mean, std = load_backbone(path)
+    enc = ViTEncoder(name, vit, mean, std, device, **kw)
+    enc.train_cfg = cfg  # the run's config: embed.py checks its resampling settings (R7)
+    return enc

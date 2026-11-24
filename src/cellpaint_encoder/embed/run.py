@@ -1,7 +1,8 @@
 """One decode -> many encoders -> site-level embeddings (DESIGN.md 1.3 "embed", 4.6 steps 1-3).
 
-Each site is fetched and decoded once (raw uint16 and illumination-corrected float32); every
-encoder then applies its own preprocessing adapter and crop grid; the site embedding is the mean
+Each site is fetched and decoded once (raw uint16 and illumination-corrected float32, native
+resolution); every encoder then applies its own preprocessing adapter, which resamples to the
+common pixel size (R7, ``SiteContext.scale``), and its crop grid; the site embedding is the mean
 of the tile CLS embeddings. Output per encoder: ``<out>/<encoder>/sites.parquet`` with metadata
 columns and ``e0..eD`` as float16.
 """
@@ -76,8 +77,16 @@ def embed_manifest(
     batch_size: int = 64,
     workers: int = 16,
     sites_per_chunk: int = 32,
+    *,
+    resample_info: dict,
 ) -> dict:
+    """``resample_info``: ``resample.resample_record(cfg.data, sources)``; its ``resample_scales``
+    must cover every source in ``rows`` (it sets each site's ``SiteContext.scale``)."""
     out_dir = Path(out_dir)
+    scales = resample_info["resample_scales"]
+    missing = set(rows.source) - set(scales)
+    if missing:
+        raise KeyError(f"no resample scale for sources {sorted(missing)}")
     il = IllumCache(g)
     metas: list[dict] = []
     embs: dict[str, list[np.ndarray]] = {e.name: [] for e in encoders}
@@ -92,7 +101,10 @@ def embed_manifest(
             ta = time.time()
             chunk = list(ex.map(load, list(rows.iloc[i : i + sites_per_chunk].itertuples())))
             t_dec += time.time() - ta
-            ctxs = [SiteContext(raw, cor, plate_norms.get(r.plate), _meta(r)) for r, raw, cor in chunk]
+            ctxs = [
+                SiteContext(raw, cor, plate_norms.get(r.plate), _meta(r), scales[r.source])
+                for r, raw, cor in chunk
+            ]
             for enc in encoders:
                 tb = time.time()
                 tiles = [enc.preprocess(c) for c in ctxs]
@@ -105,6 +117,7 @@ def embed_manifest(
         "decode_seconds": t_dec,
         "encode_seconds": t_enc,
         "bytes_downloaded": g.bytes_downloaded,
+        **resample_info,
     }
     for enc in encoders:
         d = out_dir / enc.name

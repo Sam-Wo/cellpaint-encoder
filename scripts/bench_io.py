@@ -167,16 +167,22 @@ def _bench_init(cfg_path, overrides):
             return mem[key]
 
         g.get = cached
+    if cfg.data.resample_um_per_px is not None:  # as in write_shards' workers
+        import torch
+
+        torch.set_num_threads(1)
     _BW.update(cfg=cfg, g=g, il=IllumCache(g, max_plates=4))
 
 
 def _bench_site(r: dict) -> int:
     from cellpaint_encoder.data.manifest import _rng
+    from cellpaint_encoder.data.resample import scale_for
     from cellpaint_encoder.data.sites import read_site_uint8
     from cellpaint_encoder.data.tiles import training_tiles
 
     dc = _BW["cfg"].data
-    u8 = read_site_uint8(_BW["g"], _BW["il"], pd.Series(r), [0.0] * 5, [1000.0] * 5)  # write_shards' path
+    scale = scale_for(dc, r["source"])  # R7 resample included, as in write_shards
+    u8 = read_site_uint8(_BW["g"], _BW["il"], pd.Series(r), [0.0] * 5, [1000.0] * 5, scale=scale)
     return len(
         training_tiles(u8, dc.tile_size, dc.tiles_per_site, dc.fg_min, _rng(0, r["plate"], r["well"]))[0]
     )

@@ -18,6 +18,7 @@ import json
 import torch
 
 from cellpaint_encoder.config import load_config
+from cellpaint_encoder.data.resample import check_shards_resample
 from cellpaint_encoder.embed.run import embed_dev_shards
 from cellpaint_encoder.eval.pipeline import evaluate_sites
 from cellpaint_encoder.train.loop import resolve_device
@@ -39,6 +40,7 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from embed import build_encoder  # scripts/embed.py
 
+    check_shards_resample(cfg.data.dev_shards_dir, cfg.data, "dev shards")  # R7
     enc = build_encoder(a.encoder, cfg, device, None)
     sites = embed_dev_shards(enc, cfg.data.dev_shards_dir, cfg.eval.batch_size)
     r = evaluate_sites(sites, cfg, which=("primary", "m1", "probes"))

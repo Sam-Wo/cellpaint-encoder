@@ -69,7 +69,12 @@ class DataCfg:
     dev_site_size: int = 896  # dev cache stores centred 896^2 sites (4x4 grid of 224)
     shard_max_bytes: float = 1.0e9
     zstd_level: int = 3
-    resample_um_per_px: float | None = None  # R7: resample to a common pixel size if set
+    # R7 (data/resample.py): resample every site to this µm/px after normalisation (None = off);
+    # a source within resample_tol (relative) of it keeps its native pixels. pixel_size_um: source ->
+    # µm/px from jump-cellpainting/datasets metadata/microscope_config.csv (configs/full.yaml).
+    resample_um_per_px: float | None = None
+    resample_tol: float = 0.02
+    pixel_size_um: dict[str, float] = field(default_factory=dict)
     # --- training-time loading (3.4) ---
     shards_dir: str = "data/shards/train"
     dev_shards_dir: str = "data/shards/dev"
@@ -199,6 +204,10 @@ class EvalCfg:
     n_null: int = 1000
     moa_table: str | None = None  # csv with compound_id, moa
     seed: int = 0
+    # M4 target annotation (E3): csv with compound_id, targets (|-separated), written by
+    # scripts/fetch_jump_metadata.py; None = skipped
+    target_table: str | None = None
+    n_label_shuffle: int = 100  # label-shuffle null draws for M4 target annotation
 
 
 @dataclass(frozen=True)
@@ -243,6 +252,13 @@ NON_SCIENCE_KEYS = {
 
 def _coerce(tp: Any, value: Any, key: str) -> Any:
     origin = get_origin(tp)
+    if origin is dict:
+        kt, vt = get_args(tp)
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise TypeError(f"{key}: expected a mapping")
+        return {_coerce(kt, str(k), key): _coerce(vt, v, f"{key}.{k}") for k, v in value.items()}
     if is_dataclass(tp):
         if not isinstance(value, dict):
             raise TypeError(f"{key}: expected a mapping")
@@ -324,7 +340,10 @@ def _set_path(d: dict, dotted: str, value: Any) -> None:
 
 def _check_path(dotted: str) -> None:
     cls: Any = Config
-    for p in dotted.split("."):
+    parts = dotted.split(".")
+    for i, p in enumerate(parts):
+        if get_origin(cls) is dict and i == len(parts) - 1:  # one entry of a mapping key
+            return
         if not is_dataclass(cls) or p not in {f.name for f in fields(cls)}:
             raise KeyError(f"unknown config key '{dotted}'")
         cls = get_type_hints(cls)[p]
@@ -355,8 +374,17 @@ def _flatten(d: dict, prefix: str = "") -> dict:
     return out
 
 
+# keys added after runs were started: they enter the hash only when set away from their default,
+# so the hash (run directory, resume check) of every existing config is unchanged
+HASH_IF_NOT_DEFAULT = {"eval.target_table": None, "eval.n_label_shuffle": 100}
+
+
 def config_hash(cfg: Config) -> str:
-    flat = {k: v for k, v in _flatten(to_dict(cfg)).items() if k not in NON_SCIENCE_KEYS}
+    flat = {
+        k: v
+        for k, v in _flatten(to_dict(cfg)).items()
+        if k not in NON_SCIENCE_KEYS and not (k in HASH_IF_NOT_DEFAULT and v == HASH_IF_NOT_DEFAULT[k])
+    }
     return hashlib.sha256(json.dumps(flat, sort_keys=True).encode()).hexdigest()[:10]
 
 

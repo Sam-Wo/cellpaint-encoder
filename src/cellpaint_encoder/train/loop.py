@@ -29,6 +29,7 @@ import torch
 
 from ..config import Config, config_hash, save_config, to_dict
 from ..data.augment_gpu import MultiCropAugment
+from ..data.resample import check_shards_resample
 from ..data.sampler import BalancedBatchSampler
 from ..data.shards import TileDataset, collate_tiles, load_index, load_stats
 from ..models.dino_head import DINOHead, MultiCropWrapper
@@ -143,6 +144,8 @@ class Trainer:
             torch.use_deterministic_algorithms(True, warn_only=True)
 
         self.index = load_index(cfg.data.shards_dir)
+        # R7: the shards must have been resampled exactly as this config says (fails loudly)
+        check_shards_resample(cfg.data.shards_dir, cfg.data, "training shards")
         o = cfg.optim
         if o.batch_size % o.accum_steps:
             raise ValueError("optim.batch_size must be divisible by optim.accum_steps")

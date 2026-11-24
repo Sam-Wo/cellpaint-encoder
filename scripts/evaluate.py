@@ -11,7 +11,9 @@ well table instead (e.g. ShapeShift's wells, for continuity checks / smoke tests
 
 source_6 stays locked unless ``eval.unlock_heldout=true`` (final scoring, once, all methods).
 Comparisons: ours vs CellProfiler (P1) and vs ImageNet-frozen (P2) on per-compound AP, with the
-compound bootstrap and one-sided Wilcoxon; M1 non-inferiority (P3); Holm over the secondaries.
+compound bootstrap and one-sided Wilcoxon; M1 non-inferiority (P3); Holm over the secondaries
+(:func:`secondary_family`). M4 target annotation needs ``eval.target_table`` (written by
+``scripts/fetch_jump_metadata.py``); without it that metric is skipped with a message.
 """
 
 import sys
@@ -113,6 +115,39 @@ def per_unit(res: dict, name: str) -> pd.Series:
     return t.set_index(t.source + "|" + t.compound_id).mAP
 
 
+# Holm family (DESIGN 6.1: "Secondaries P2-P4 and M3-M5 are Holm-corrected"): every secondary
+# comparison that yields a p-value is one member. M4 has two pre-registered metrics (4.3: Target-2
+# cross-source compound retrieval, and target-annotation mAP), each tested separately, so M4
+# contributes two members; P4 is a point estimate with CI only (no p-value), so it is not a member.
+SECONDARY_FAMILY = (
+    "P2_vs_imagenet",
+    "P3_M1_noninferiority_vs_cellprofiler",
+    "M3_moa_vs_cellprofiler",
+    "M4_target2_vs_cellprofiler",
+    "M4_target_annotation_vs_cellprofiler",
+    "M5_cross_dose_vs_cellprofiler",
+)
+
+
+def secondary_family(comps: dict) -> dict[str, float]:
+    """The p-values that enter the Holm correction (members absent from ``comps`` are left out)."""
+    return {k: comps[k].get("p_wilcoxon", np.nan) for k in SECONDARY_FAMILY if k in comps}
+
+
+def load_targets(cfg) -> pd.DataFrame | None:
+    path = cfg.eval.target_table
+    if not path:
+        print("M4 target annotation skipped: eval.target_table not set (scripts/fetch_jump_metadata.py)")
+        return None
+    if not Path(path).exists():
+        raise FileNotFoundError(f"eval.target_table={path} does not exist (scripts/fetch_jump_metadata.py)")
+    t = pd.read_csv(path, dtype=str)
+    missing = {"compound_id", "targets"} - set(t.columns)
+    if missing:
+        raise ValueError(f"{path}: missing columns {sorted(missing)}")
+    return t
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -137,6 +172,7 @@ def main():
     moa = (
         pd.read_csv(cfg.eval.moa_table) if cfg.eval.moa_table and Path(cfg.eval.moa_table).exists() else None
     )
+    targets = load_targets(cfg)
     reps: dict[str, tuple] = {}
     for spec in a.rep:
         name, _, path = spec.partition("=")
@@ -156,7 +192,7 @@ def main():
     results, full = {}, {}
     for name, (meta, X, info) in reps.items():
         k = (meta.source + "|" + meta.plate + "|" + meta.well).isin(common).to_numpy()
-        res = evaluate_wells(meta[k].reset_index(drop=True), X[k], cfg, moa=moa)
+        res = evaluate_wells(meta[k].reset_index(drop=True), X[k], cfg, moa=moa, targets=targets)
         res["input"] = info
         full[name] = res
         results[name] = public(res)
@@ -164,6 +200,12 @@ def main():
             f"{name}: wells={res['n_wells']} eps={res['eps']} dev_xsrc_mAP={res['dev_cross_source']['mAP']:.4f} "
             f"M1={res['M1']['mAP']:.4f} M2={res['M2']['mAP']:.4f}"
         )
+        ta = res.get("M4_target_annotation", {})
+        if "mAP" in ta:
+            print(
+                f"  M4 target annotation: mAP={ta['mAP']:.4f} shuffle null={ta.get('shuffle_null_mean', np.nan):.4f} "
+                f"queries={ta['n_queries']} targets={ta['n_targets']}"
+            )
     comps = {}
     if a.ours in full:
         o = full[a.ours]
@@ -199,6 +241,11 @@ def main():
                     _q(c, "M4_target2", ["query_source", "compound_id"]),
                 ),
                 (
+                    "M4_target_annotation_vs_cellprofiler",
+                    _q(o, "M4_target_annotation_queries", ["compound_id"], "ap"),
+                    _q(c, "M4_target_annotation_queries", ["compound_id"], "ap"),
+                ),
+                (
                     "M5_cross_dose_vs_cellprofiler",
                     _q(o, "M5_cross_dose", ["compound_id"]),
                     _q(c, "M5_cross_dose", ["compound_id"]),
@@ -208,12 +255,7 @@ def main():
                     comps[name] = stats.paired_compound_test(
                         s_o, s_c, n_boot=cfg.eval.n_boot, seed=cfg.eval.seed
                     )
-        # Holm family (6.1): P2-P4 and M3-M5. P4 is a point estimate with CI only (no p-value).
-        fam = {
-            k: v.get("p_wilcoxon", np.nan)
-            for k, v in comps.items()
-            if k.startswith(("P2", "P3", "M3", "M4", "M5"))
-        }
+        fam = secondary_family(comps)
         comps["holm_secondaries"] = stats.holm(fam) if fam else {}
     out = write_report(
         results, a.out, {"comparisons": comps, "config": to_dict(cfg), "common_wells": len(common)}

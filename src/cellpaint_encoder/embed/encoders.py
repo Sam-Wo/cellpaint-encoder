@@ -18,12 +18,17 @@ from .grids import grid_tiles
 
 @dataclass
 class SiteContext:
-    """What a preprocessing adapter may use: raw uint16, illum-corrected float32, plate percentiles."""
+    """What a preprocessing adapter may use: raw uint16, illum-corrected float32, plate percentiles,
+    all at **native** resolution, and the site's R7 resampling factor.
+
+    Every adapter must pass its normalised float image through ``resample.resample_site(x,
+    ctx.scale)`` before tiling (DESIGN.md 4.6: identical geometry for all image models)."""
 
     raw: np.ndarray  # uint16 [5, H, W], canonical channel order
     corrected: np.ndarray | None  # float32 [5, H, W] after illumination correction
     plate_norm: dict | None
     meta: dict = field(default_factory=dict)
+    scale: float = 1.0  # resample.scale_for(cfg.data, source); 1.0 = native pixels
 
 
 class Encoder:
@@ -64,10 +69,10 @@ class ViTEncoder(Encoder):
         self.pct, self.norm_mode, self.amp = pct, norm_mode, amp
 
     def preprocess(self, ctx: SiteContext) -> np.ndarray:
-        u8 = normalise_site(ctx.corrected, self.norm_mode, ctx.plate_norm, *self.pct)
+        u8 = normalise_site(ctx.corrected, self.norm_mode, ctx.plate_norm, *self.pct, scale=ctx.scale)
         return grid_tiles(u8, self.crop, self.grid, self.window)
 
-    def preprocess_u8(self, u8: np.ndarray) -> np.ndarray:  # dev cache: already normalised
+    def preprocess_u8(self, u8: np.ndarray) -> np.ndarray:  # dev cache: already normalised + resampled
         return grid_tiles(u8, self.crop, self.grid, self.window)
 
     @torch.no_grad()

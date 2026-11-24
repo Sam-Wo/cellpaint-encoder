@@ -15,7 +15,8 @@ Benjamini-Hochberg across groups.
 * **M1 / M2** :func:`within_source`: candidates in the same source; M1 restricts the whole
   candidate pool to other plates and other well positions (``position_restricted=True``); M2 only
   removes the query itself. Units are source x compound.
-* **M3 / M4** :func:`label_retrieval` on compound consensus profiles (MoA or target labels).
+* **M3 / M4** :func:`label_retrieval` on compound consensus profiles: M3 single-label (MoA);
+  M4 target annotation ``multilabel=True`` (positives share >= 1 target), with a label-shuffle null.
 """
 
 from __future__ import annotations
@@ -63,14 +64,15 @@ def bh(p: np.ndarray) -> np.ndarray:
 
 
 def _queries(
-    meta: pd.DataFrame, U: np.ndarray, qidx: np.ndarray, cand_fn, labels: np.ndarray
+    meta: pd.DataFrame, U: np.ndarray, qidx: np.ndarray, cand_fn, labels: np.ndarray, pos_fn=None
 ) -> pd.DataFrame:
+    """One row per query. Positives: same ``labels`` value, or ``pos_fn(i, c)`` (multilabel)."""
     rows = []
     for i in qidx:
         cand = cand_fn(i)
         cand[i] = False
         c = np.flatnonzero(cand)
-        pos = labels[c] == labels[i]
+        pos = labels[c] == labels[i] if pos_fn is None else pos_fn(i, c)
         s = U[c] @ U[i]
         rows.append(
             {
@@ -210,10 +212,33 @@ def consensus(meta: pd.DataFrame, X: np.ndarray, sources=None) -> tuple[pd.DataF
 
 
 def label_retrieval(
-    labels: np.ndarray, X: np.ndarray, min_members: int = 3, n_null: int = 1000, seed: int = 0
+    labels,
+    X: np.ndarray,
+    min_members: int = 3,
+    n_null: int = 1000,
+    seed: int = 0,
+    multilabel: bool = False,
+    n_shuffle: int = 0,
 ):
-    """M3/M4: each annotated compound queries all other annotated compounds; positives share the label.
-    Only classes with >= ``min_members`` members are queried (all annotated compounds stay candidates)."""
+    """M3/M4: each annotated compound queries all other annotated compounds; positives share a label.
+
+    Single-label (M3, ``multilabel=False``): only classes with >= ``min_members`` members are
+    queried (all annotated compounds stay candidates); the headline ``mAP`` is the mean over classes
+    of the class mean AP.
+
+    Multilabel (M4 target annotation): ``labels[i]`` is a set of labels (or a ``|``-separated
+    string); a compound is annotated if it has >= 1 label. Only labels held by >= ``min_members``
+    annotated compounds count; a query is an annotated compound holding >= 1 such label, its
+    positives are the other annotated compounds sharing >= 1 such label, its negatives are all other
+    annotated compounds (annotated compounds without a counted label are candidates, never queries).
+    The headline ``mAP`` is the mean AP over queries (each query is its own group, with its own
+    permutation p-value).
+
+    ``n_shuffle`` > 0 adds a label-shuffle null: the annotated compounds' label (sets) are permuted
+    among them ``n_shuffle`` times (seeded by ``seed`` only, so every representation sees the same
+    permutations) and the headline statistic is recomputed on the same profiles."""
+    if multilabel:
+        return _multilabel_retrieval(labels, X, min_members, n_null, seed, n_shuffle)
     labels = np.asarray(labels, dtype=object)
     ok = pd.notna(labels) & (labels != "") & (labels != "unclear")
     idx = np.flatnonzero(ok)
@@ -233,4 +258,87 @@ def label_retrieval(
         q["query"] = idx[q["query"].to_numpy()]  # back to the caller's row index
     summ["n_classes"] = len(big)
     summ["mean_ap_over_queries"] = float(q.ap.mean()) if len(q) else float("nan")
+    if n_shuffle:
+        classes = sorted(big, key=str)
+        L = np.stack([lab == c for c in classes], axis=1) if classes else np.zeros((len(lab), 0), bool)
+        summ.update(_shuffle_null(U, L, n_shuffle, seed, summ["mAP"], per_class=True))
     return per, summ, q
+
+
+def _membership(labels, min_members: int):
+    """Annotated rows, their label sets, the counted labels (>= min_members) and the bool matrix."""
+    from .targets import parse_targets
+
+    sets = [frozenset(t for t in parse_targets(v) if t != "unclear") for v in labels]
+    idx = np.array([i for i, s in enumerate(sets) if s], dtype=int)
+    counts = pd.Series([t for i in idx for t in sets[i]], dtype=object).value_counts()
+    big = sorted(counts[counts >= min_members].index)
+    col = {t: j for j, t in enumerate(big)}
+    L = np.zeros((len(idx), len(big)), bool)
+    for r, i in enumerate(idx):
+        for t in sets[i]:
+            if t in col:
+                L[r, col[t]] = True
+    return idx, [sets[i] for i in idx], big, L
+
+
+def _multilabel_retrieval(labels, X, min_members, n_null, seed, n_shuffle):
+    idx, sets, big, L = _membership(list(labels), min_members)
+    U = unit_rows(X[idx].astype(np.float64)) if len(idx) else np.zeros((0, X.shape[1]))
+    bigset = set(big)
+    shown = np.array(["|".join(sorted(s & bigset)) for s in sets], dtype=object)
+    qidx = np.flatnonzero(L.any(1)) if len(idx) else np.zeros(0, int)
+
+    def cand(i):
+        return np.ones(len(idx), bool)
+
+    def pos(i, c):
+        return (L[c] & L[i]).any(1)
+
+    q = _queries(pd.DataFrame({"label": shown}), U, qidx, cand, shown, pos_fn=pos)
+    per, summ = summarise(q, ["query"], n_null, seed)
+    if len(q):
+        q["query"] = idx[q["query"].to_numpy()]  # back to the caller's row index
+    if len(per):
+        per["query"] = idx[per["query"].to_numpy().astype(int)]
+        per["label"] = shown[np.searchsorted(idx, per["query"].to_numpy())]
+    summ["n_classes"] = summ["n_targets"] = len(big)
+    summ["n_annotated"] = len(idx)
+    summ["mean_ap_over_queries"] = float(q.ap.mean()) if len(q) else float("nan")
+    if n_shuffle:
+        summ.update(_shuffle_null(U, L, n_shuffle, seed, summ["mAP"], per_class=False))
+    return per, summ, q
+
+
+def _headline(S: np.ndarray, L: np.ndarray, per_class: bool) -> float:
+    """Headline mAP for membership ``L`` on the similarity matrix ``S`` (same candidate order and
+    tie-breaking as :func:`_queries`): mean over queries, or mean over classes of class means."""
+    n = len(S)
+    aps, cls = [], []
+    for i in np.flatnonzero(L.any(1)):
+        c = np.r_[0:i, i + 1 : n]
+        p = (L[c] & L[i]).any(1)
+        if p.any():
+            aps.append(average_precision(S[i, c], p))
+            cls.append(int(np.argmax(L[i])))
+    if not aps:
+        return float("nan")
+    if per_class:
+        return float(pd.Series(aps).groupby(cls).mean().mean())
+    return float(np.mean(aps))
+
+
+def _shuffle_null(U, L, n_shuffle: int, seed: int, observed: float, per_class: bool) -> dict:
+    rng = np.random.default_rng([seed, 7919])  # independent of the AP-null stream, same for every rep
+    S = U @ U.T
+    null = np.array([_headline(S, L[rng.permutation(len(L))], per_class) for _ in range(n_shuffle)])
+    ok = null[np.isfinite(null)]
+    return {
+        "n_shuffle": int(n_shuffle),
+        "shuffle_null_mean": float(ok.mean()) if len(ok) else float("nan"),
+        "shuffle_null_sd": float(ok.std(ddof=1)) if len(ok) > 1 else float("nan"),
+        "shuffle_null_q95": float(np.quantile(ok, 0.95)) if len(ok) else float("nan"),
+        "p_shuffle": float((1 + np.sum(ok >= observed - 1e-12)) / (1 + len(ok)))
+        if len(ok) and np.isfinite(observed)
+        else float("nan"),
+    }

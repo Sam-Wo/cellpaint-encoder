@@ -8,6 +8,11 @@ Encoder specs: ``ours=<teacher_backbone.pt or checkpoint>``, ``imagenet_dino``, 
 ``deepcellmorpho=<converted .pt>[:arch]`` and ``openphenom=<repo_dir>`` (the last two only inside the
 sandbox, see RUNBOOK.md). Our model, ImageNet and random use the training shards' channel
 statistics. Embedding source_6 is allowed; metrics on it stay locked (evaluate.py).
+
+Pixel size (R7): every encoder sees sites resampled to ``data.resample_um_per_px`` (sources within
+``data.resample_tol`` stay native). The script fails if the training shards' ``stats.json`` or the
+``ours=`` checkpoint's config were built with other resampling settings, and records the applied
+per-source scales in each ``embed_info.json``.
 """
 
 import sys
@@ -24,6 +29,7 @@ import torch
 from cellpaint_encoder.config import load_config
 from cellpaint_encoder.data.gallery import Gallery
 from cellpaint_encoder.data.plate_norm import compute_plate_norms
+from cellpaint_encoder.data.resample import check_resample_record, check_shards_resample, resample_record
 from cellpaint_encoder.data.shards import load_stats
 from cellpaint_encoder.data.sites import IllumCache
 from cellpaint_encoder.embed.run import embed_manifest
@@ -37,8 +43,16 @@ def build_encoder(spec: str, cfg, device, window):
     if name == "ours":
         from cellpaint_encoder.embed.baselines import ours
 
-        return ours.build(arg, device, amp=amp, **kw)
+        enc = ours.build(arg, device, amp=amp, **kw)
+        # the checkpoint's training cache must have been resampled like the pixels we feed it
+        check_resample_record(
+            resample_record(enc.train_cfg.data, enc.train_cfg.data.train_sources),
+            cfg.data,
+            f"checkpoint {arg}",
+        )
+        return enc
     st = load_stats(cfg.data.shards_dir)
+    check_resample_record(st, cfg.data, f"training shards {cfg.data.shards_dir} (channel statistics)")
     mean, std = st["channel_mean"], st["channel_std"]
     if name == "imagenet_dino":
         from cellpaint_encoder.embed.baselines import imagenet_dino
@@ -72,8 +86,6 @@ def main():
     ap.add_argument("overrides", nargs="*")
     a = ap.parse_args()
     cfg = load_config(a.config, a.overrides)
-    if cfg.data.resample_um_per_px is not None:
-        raise NotImplementedError("data.resample_um_per_px (R7) is not implemented yet; see RUNBOOK 4")
     if cfg.run.threads:
         torch.set_num_threads(cfg.run.threads)
     device = resolve_device(cfg.run.device)
@@ -81,6 +93,8 @@ def main():
     rows = m[m.eval_set.isin(a.sets.split(","))].reset_index(drop=True)
     if a.max_sites:
         rows = rows.iloc[: a.max_sites]
+    resample_info = resample_record(cfg.data, set(rows.source))  # raises for a source without a pixel size
+    check_shards_resample(cfg.data.shards_dir, cfg.data, "training shards", required=False)
     g = Gallery(mirror=cfg.data.raw_mirror, byte_cap=cfg.data.byte_cap)
     norms = compute_plate_norms(
         m,
@@ -94,7 +108,9 @@ def main():
         plates=set(rows.plate),
     )
     encs = [build_encoder(s, cfg, device, a.window) for s in a.encoder]
-    info = embed_manifest(rows, encs, g, norms, Path(a.out), cfg.eval.batch_size, a.workers)
+    info = embed_manifest(
+        rows, encs, g, norms, Path(a.out), cfg.eval.batch_size, a.workers, resample_info=resample_info
+    )
     info["sites_per_s"] = info["sites"] / max(info["seconds"], 1e-9)
     print(json.dumps(info, indent=1))
 

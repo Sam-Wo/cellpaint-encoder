@@ -1,5 +1,28 @@
 # A3: random initialisation instead of ImageNet DINO, 25 epochs.
 base: ../full.yaml
+data:
+  # R7 pixel size (RUNBOOK 4): after illum correction + normalisation at native resolution, resample
+  # every site to 0.65 um/px (antialiased bilinear) before tiling, in the caches and in embed.py.
+  # Sources within 2% keep native pixels (2, 10, held-out 6); 3 (x0.920) and 8 (x1.082) are resampled.
+  # Identical in every config (tests/test_resample.py); science keys, so part of the run hash.
+  resample_um_per_px: 0.65
+  resample_tol: 0.02
+  # um/px from jump-cellpainting/datasets metadata/microscope_config.csv, column
+  # Metadata_Pixel_Size_Microns, at commit b3b4555d44cac440ffda7e25f3adbeb34fbee7fe
+  pixel_size_um:
+    source_1: 0.597976
+    source_2: 0.65
+    source_3: 0.597976
+    source_4: 0.597976
+    source_5: 0.64974
+    source_6: 0.646187
+    source_7: 0.65
+    source_8: 0.7032
+    source_9: 0.597976
+    source_10: 0.6516944
+    source_11: 0.597976
+    source_13: 0.65
+    source_15: 0.597976
 model: {init: random}
 optim: {epochs: 25, warmup_epochs: 3}
 dino: {warmup_teacher_temp_epochs: 8}

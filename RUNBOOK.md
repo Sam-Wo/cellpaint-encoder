@@ -4,13 +4,81 @@ This runbook covers the exact setup, commands, cost checkpoints and stop/go gate
 
 **Order:** G0 (data, CPU pod) → G-B (baselines, dev only) → cache → **G1 pilot (GPU)** → main run → G2 at epoch 25 → G3 → seed 1 + ablations → final scoring (source_6 unlocked once, all methods together).
 
-Before G1: freeze `PREREG.md` (a copy of DESIGN.md §6 plus the evaluation rules fixed in code, listed in §6 below) and tag it `git tag prereg-v1 && git push --tags`. **This has not been done yet.**
+Before G1: freeze `PREREG.md` (a copy of DESIGN.md §6 plus the evaluation rules fixed in code, listed in §6 below) and tag it `git tag prereg-v1 && git push --tags`. **Done 2026-11-24:** see [PREREG.md](PREREG.md); run hash of full/pilot `c900494f6d`. Any later change is a deviation (`DEVIATIONS.md`).
 
 ---
 
 ## 1. Storage: choose one option
 
-### Option A (recommended, DESIGN §1.4): RunPod, tile cache on the pod
+### Option V (chosen 2026-11-24): vast.ai, one instance for every stage
+
+Vast.ai has no network volume that moves between hosts, and an instance's disk size is fixed when it is created. Every stage therefore runs on **one** GPU instance, including G0 and the CPU-bound cache build (about 4–6 h of GPU-instance time). Copying the 232 GB cache between hosts instead would be billed at both ends.
+
+**Choosing an offer.** This query is **untested**: the field names come from the vast.ai CLI reference, but it has never been run.
+
+```
+pip install vastai && vastai set api-key <key>          # laptop; keys at cloud.vast.ai/manage-keys
+vastai create ssh-key ~/.ssh/id_ed25519.pub              # before creating the instance
+vastai search offers 'gpu_name in ["A100 SXM4"] num_gpus=1 gpu_ram>=79 cpu_cores_effective>=16 cpu_ram>=64 disk_space>=600 inet_down>=2000 inet_down_cost<=0.003 cuda_vers>=12.8 reliability>=0.98 geolocation in [US]' -o 'dph'
+```
+
+Hover over the offer's price to check its three cost lines:
+- **GPU $/h (`dph`).** The cost checkpoints in §3 assume $2.19/h; scale them by `dph / 2.19`.
+- **Download $/GB (`inet_down_cost`).** Vast bills ingress, and the full plan reads about **5.2 TB** from S3:
+  - 1.91 TB for the training cache;
+  - 0.11 TB of normalisation sites;
+  - 1.91 TB again for the per-image-norm ablation cache;
+  - 1.29 TB of evaluation sets E1–E4 at final scoring.
+
+  That is about $16 at $0.003/GB and about $104 at $0.02/GB. The host choice matters.
+- **Storage $/GB-month.** It is billed for as long as the instance exists, running or stopped, until it is destroyed.
+
+**Disk: `--disk 600`.**
+- Budgeted at raw size, as DESIGN §1.3 does: training cache 358 GB (≈ 232 GB at the measured zstd ratio of 0.65), dev cache ≈ 70 GB, checkpoints ≈ 15 GB, and about 40 GB for the venv, the image, CellProfiler profiles and embeddings. That totals ≈ 480 GB.
+- The per-image-norm ablation needs a second training cache (358 GB raw), which does not fit next to the first. Run `abl_perimage_norm` **last**, after deleting `data/shards/train`. `pod.sh` checks free space and stops with instructions instead of deleting anything.
+- To keep both caches, use `--disk 900`.
+
+**Rent on demand, not interruptible.** An outbid interruptible instance stops and may stay stopped.
+
+**Image.** `pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime` (amd64, 4.3 GB). It ships Python 3.11, per PyTorch's `Dockerfile` and `docker.Makefile` at tag v2.7.0. `setup` installs its own pinned torch 2.10.0 (cu128) in a venv, so the image only supplies Python and the CUDA userspace. The host driver must support CUDA 12.8 (`cuda_vers>=12.8`).
+
+```
+vastai create instance <OFFER_ID> --image pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime \
+    --disk 600 --ssh --direct --label cpe-full --cancel-unavail
+vastai ssh-url <INSTANCE_ID>                             # ssh://root@HOST:PORT  ->  ssh -p PORT root@HOST
+```
+
+**On the instance:**
+```
+apt-get update && apt-get install -y git tmux rsync curl
+tmux new -s cpe                                          # every stage runs inside tmux; reattach: tmux attach -t cpe
+mkdir -p /workspace && cd /workspace
+git clone https://github.com/Sam-Wo/cellpaint-encoder && cd cellpaint-encoder
+bash scripts/pod.sh setup
+```
+
+`pod.sh` sets `PROCS` from the container's cgroup CPU quota, because `nproc` inside a vast container can report every host core, and prints the value. If it differs from the offer's `cpu_cores_effective`, export `PROCS=<cpu_cores_effective>`.
+
+**Anchor tables, from the laptop:**
+```
+scp -P <PORT> -r data/anchor root@<HOST>:/workspace/cellpaint-encoder/data/
+```
+
+**Backups.** The instance disk holds the only copy of everything. After G1, G2 and G3, after every finished run, and every few hours during the main run, copy the run logs, the newest checkpoint (0.71 GB) and `results/` to the laptop:
+
+```
+scp -P <PORT> -r root@<HOST>:/workspace/cellpaint-encoder/results ./results_vast
+```
+
+**Stopping and destroying.**
+- **Do not stop the instance between stages.** Storage keeps billing while it is stopped. Whether the GPU can be rented by someone else meanwhile, so that the instance cannot restart, is not documented; treat it as a risk.
+- When everything is copied off, destroy the instance: `vastai destroy instance <INSTANCE_ID>`.
+
+**G0 failure on vast** (S3 < 100 MB/s): destroy the instance, which holds nothing yet, and try another US host. Fall back to Option B (AWS) only if two hosts fail.
+
+**H100 benchmark (§3).** Skip it on vast unless G1 measures < 250 samples/s. It needs a second instance and a billed copy of the cache.
+
+### Option A (DESIGN §1.4, not used): RunPod, tile cache on the pod
 
 - **Pod:**
   - RunPod Secure Cloud, 1× A100 SXM 80 GB ($2.19/h; check the price on launch day);
@@ -58,9 +126,11 @@ Before G1: freeze `PREREG.md` (a copy of DESIGN.md §6 plus the evaluation rules
 ## 2. Setup (once per pod or instance)
 
 ```
-cd /workspace && git clone <private repo url> cellpaint-encoder && cd cellpaint-encoder
+cd /workspace && git clone https://github.com/Sam-Wo/cellpaint-encoder && cd cellpaint-encoder
 bash scripts/pod.sh setup
 ```
+
+On vast.ai, first run the apt and tmux lines of §1 Option V.
 
 `setup` does the following:
 1. creates `.venv`;
@@ -89,7 +159,7 @@ Costs are the planning numbers of DESIGN §5.3 at $2.19/h, given as **cumulative
 
 | Stage | Command | Hardware | Pass criteria / decision | Cumulative $ (full) |
 |---|---|---|---|---|
-| G0 data | `bash scripts/pod.sh g0` | RunPod **CPU** pod, 8–16 vCPU | (1) `results/g0_s3.json` MB_per_s ≥ 150 over 600 s; under 100 → Option B. (2) `results/g0_cache.json` sites_per_s ≥ 40. (3) `build_manifest` raises if any stain is missing in any plate (validates the channel map for every source used). (4) illum dtypes and shapes are printed in `data/write_shards_summary.json` after `cache`. (5) pixel size: see §4 | ≤ 2 |
+| G0 data | `bash scripts/pod.sh g0` | RunPod **CPU** pod, 8–16 vCPU (vast.ai: the GPU instance itself, ≥ 16 vCPU) | (1) `results/g0_s3.json` MB_per_s ≥ 150 over 600 s; under 100 → Option B (vast.ai: another host first, see §1 Option V). (2) `results/g0_cache.json` sites_per_s ≥ 40. (3) `build_manifest` raises if any stain is missing in any plate (validates the channel map for every source used). (4) illum dtypes and shapes are printed in `data/write_shards_summary.json` after `cache`. (5) pixel size: see §4 | ≤ 2 |
 | Cache | `bash scripts/pod.sh cache` | same CPU pod, or the GPU pod while it is idle | `data/shards/train/stats.json`: `tiles_written` ≈ 357k (the cell filter may drop a few %), `zstd_ratio` ≤ 0.7; `results/g0_loader.json` samples_per_s ≥ 400 | ≤ 13 (CPU pod) |
 | G-B baselines | `bash scripts/pod.sh baselines`; CellProfiler: `python scripts/evaluate.py --config configs/full.yaml --cellprofiler-gallery --out results/dev_cp` (CPU, 6.1 GB of profiles); DeepCellMorpho/OpenPhenom: §4 | GPU pod, or CPU for CP | the harness reproduces ShapeShift's CellProfiler replicate AUC within ±0.02 on the same wells; the §2 fidelity gates pass, or the failure is flagged. **source_6 stays locked** (no `eval.unlock_heldout`) | ≤ 24 |
 | **G1 pilot** | **`bash scripts/pod.sh pilot`** | GPU pod (A100 SXM) | `results/g1_report.txt` (from `scripts/check_gates.py g1`): throughput ≥ 250/s; data_wait < 10%; GPU busy ≥ 85%; no collapse (teacher entropy away from 0 and from log K; feat_std > 0.1× initial); dev cross-source mAP ≥ ImageNet-frozen + 0.01 (one dev evaluation at the end of epoch 1). The report also prints the plan tier implied by the throughput | ≤ 31 |
@@ -174,17 +244,49 @@ python scripts/train.py --config configs/ablations/abl_natural_mix.yaml --run-di
 1. In the sandbox, clone the Hugging Face repo and run `--encoder openphenom=<repo dir>`.
 2. First reproduce the repo's `test_huggingface_mae.py`.
 
-**Pixel size (R7):** only source_15 records `Metadata_ImageResolutionX`. For every other source, read the TIFF tags of one site:
+**Pixel size (R7): done, so resampling is on.** TIFF resolution tags cannot be used: they hold writer defaults or the sensor pixel size. The authoritative values come from jump-cellpainting/datasets `metadata/microscope_config.csv` at commit `b3b4555d44cac440ffda7e25f3adbeb34fbee7fe`, column `Metadata_Pixel_Size_Microns`. These values are in µm/px; ✱ marks the sources we use.
 
-```
-python -c "import sys,io,tifffile; sys.path.insert(0,'src'); from cellpaint_encoder.data.gallery import Gallery; import pandas as pd; m=pd.read_parquet('data/manifest.parquet'); g=Gallery(); [print(s, {t.name:t.value for t in tifffile.TiffFile(io.BytesIO(g.get(d.key_DNA.iloc[0]))).pages[0].tags.values() if t.name in ('XResolution','ResolutionUnit','ImageDescription')}) for s,d in m.groupby('source')]"
-```
+| source | 1 | 2✱ | 3✱ | 4 | 5 | 6✱ (held out) | 7 | 8✱ | 9 | 10✱ | 11 | 13 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| µm/px | 0.597976 | 0.65 | 0.597976 | 0.597976 | 0.64974 | 0.646187 | 0.65 | 0.7032 | 0.597976 | 0.6516944 | 0.597976 | 0.65 | 0.597976 |
 
-If the spread is above 15%, set `data.resample_um_per_px` **before the pilot**. Resampling is not implemented yet (`resample_um_per_px` is only a config key); it must be added and tested first.
+Two values were checked independently:
+- source_8 matches its MetaSeries TIFF description (spatial-calibration-x = 0.7032 µm, binning 2×2).
+- source_3's 0.598 matches source_15's value as verified in its `load_data.csv`.
+
+Across the used sources the spread is 0.598 to 0.703, about 17.6%. That is above the 15% threshold, so the pre-registered rule applies: resample to a common µm/px at cache time, decided before the pilot.
+
+**Settings.** Identical in every config, including the pilot, the cut-down plan, the ablations and the smoke config. They are science keys and part of the run hash.
+- Target: `data.resample_um_per_px: 0.65`.
+- Tolerance: `data.resample_tol: 0.02`.
+- Table: `data.pixel_size_um` holds all 13 rows above.
+- Scale factor = native µm/px ÷ 0.65, and the new size = round(old size × factor).
+
+**Which sources are resampled:**
+- Any source with |factor − 1| ≤ 0.02 keeps its native pixels, bit for bit. That covers source_2, source_10, the held-out source_6 (so the DeepCellMorpho fidelity gate stays valid), and source_7.
+- source_3 is resampled ×0.920, down: a 1080² site becomes 994².
+- source_8 is resampled ×1.082, up.
+- If resampling is on and a source is missing from the table, the run raises. This covers any optional E3/E4 plates.
+
+**Order and interpolation** (`src/cellpaint_encoder/data/resample.py`):
+1. Illumination correction and the per-plate (or per-image) normalisation's affine map are applied at native resolution. The plate percentiles are still computed at native resolution.
+2. The float image is resampled per channel with `torch.nn.functional.interpolate(mode="bilinear", antialias=True, align_corners=False)` on CPU float32. The same call handles both directions.
+3. The image is then clipped, rounded, tiled and foreground-filtered, and the embedding crop windows are taken.
+
+One function (`resample.resample_site`) is used by every pixel path:
+- the training cache, the dev cache and the per-image ablation cache (`write_shards`);
+- `embed.py` for every encoder: ours, ImageNet and random through `normalise_site`, and the DeepCellMorpho and OpenPhenom adapters. These two normalise per crop or per image, so they resample their float input before the crop grid.
+
+**Guard against a train/eval mismatch:**
+- Both caches' `stats.json` and each `embed_info.json` record `resample_um_per_px`, `resample_tol` and the applied per-source scales.
+- `train.py`, the dev hook, `dev_eval.py` and `embed.py` refuse shards, or an `ours=` checkpoint config, whose settings differ from the config.
+- Shards written before this change count as "not resampled", so they are refused and must be rebuilt.
 
 ---
 
 ## 5. Throughput: measured on CPU (2026-11-23) and what is still assumed
+
+**Stale since R7:** these cache-build rates were measured before resampling was added (source_3 ×0.92, source_8 ×1.08 per site). `bench_io.py cache` now includes it, so G0's `results/g0_cache.json` on the instance is the number to trust.
 
 Measured on the development laptop: Ryzen 7 5800X3D (8 cores, 16 threads), Windows, Python 3.13, CPU torch 2.10. The data were the 12 real smoke sites (8 from source_2, 4 from source_3, which is LZW-compressed).
 
@@ -214,7 +316,7 @@ The planning rates in DESIGN §5.2 (A100 280/s, H100 PCIe 420/s) stay **[E]**.
 
 ---
 
-## 6. Evaluation rules fixed in code (to copy into PREREG.md)
+## 6. Evaluation rules fixed in code (copied into PREREG.md §4)
 
 - **Primary metric:**
   - query wells: anchor-compound wells of `eval.query_source`;
@@ -236,13 +338,11 @@ The planning rates in DESIGN §5.2 (A100 280/s, H100 PCIe 420/s) stay **[E]**.
 
 ## 7. Known gaps and decisions
 
-- PREREG.md and the `prereg-v1` tag are not created.
-- `resample_um_per_px` is not implemented (§4); a non-null value raises in `write_shards`/`embed`.
 - The DeepCellMorpho and OpenPhenom adapters are tested only against stubs of their documented interfaces.
 - The gallery EfficientNet folder name is unverified.
 - **Never run yet:** Linux-only paths (`os.pread`, fork-started loader workers, a real SIGTERM), CI on Python 3.11 (the first push is its first run), the `cu128` torch 2.10.0 wheel, any CUDA code path.
-- **M4 target-annotation mAP** is not wired (needs a Target-2 target table); M4 cross-source compound retrieval is.
-- **Dev-cache DMSO reference (needs a decision):** the dev cache keeps 4 DMSO wells per plate (DESIGN §1.3), so in-training dev metrics z-score against 4 wells, while §4.6 uses 16. G1(c) is internally consistent (ImageNet is scored on the same cache by `dev_eval.py`); G2 scores CellProfiler on the dev-cache wells with `--restrict-to-dev-cache`. Raising the dev cache to 16 DMSO wells per plate costs about +12 GB of cache.
+- **M4:** both halves are wired. M4b (target annotation) uses `eval.target_table=data/jump/target2_targets.csv`, written by `scripts/fetch_jump_metadata.py` during `pod.sh setup`; definition in PREREG §3. E3/E4 are on in `full.yaml`.
+- **Dev-cache DMSO reference (decided in PREREG §5.5: keep 4):** the dev cache keeps 4 DMSO wells per plate (DESIGN §1.3), so in-training dev metrics z-score against 4 wells, while §4.6 uses 16. G1(c) is internally consistent (ImageNet is scored on the same cache by `dev_eval.py`); G2 scores CellProfiler on the dev-cache wells with `--restrict-to-dev-cache`. Raising the dev cache to 16 DMSO wells per plate costs about +12 GB of cache.
 - **Scoping choices made in code:** M1-M3 and the ShapeShift hook use `eval.m1_sources` = sources 2, 3, 6, 8 (§4.3); the dev cache uses `data.dev_sources` = 2, 3, 8 (§1.3); the primary references and M6 include source_10.
 
 ---

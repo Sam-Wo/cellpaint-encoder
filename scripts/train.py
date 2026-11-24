@@ -3,7 +3,8 @@
     py -3.13 -I -X utf8 scripts/train.py --config configs/pilot.yaml [--resume auto] [key=value ...]
 
 The run directory defaults to ``runs/<name>-<config hash>``; ``--resume auto`` (the default)
-continues from its newest valid checkpoint.
+continues from its newest valid checkpoint. The trainer refuses shards whose ``stats.json``
+records other pixel-size resampling settings (R7) than the config; so does the dev hook.
 """
 
 import sys
@@ -34,8 +35,11 @@ def main():
         and cfg.eval.dev_every_epochs
         and Path(cfg.data.dev_shards_dir, "index.parquet").exists()
     ):
+        from cellpaint_encoder.data.resample import check_shards_resample
         from cellpaint_encoder.eval.pipeline import dev_eval_hook
 
+        # R7: fail now, not at the first dev evaluation
+        check_shards_resample(cfg.data.dev_shards_dir, cfg.data, "dev shards")
         dev = dev_eval_hook
     out = tr.train(resume=None if a.resume == "none" else a.resume, dev_eval=dev)
     print(json.dumps(out, indent=1))

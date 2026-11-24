@@ -2,6 +2,9 @@
 
 The same decode path feeds the tile cache (``write_shards``) and the embedding pass
 (``embed``): each site is decoded once as raw uint16 per channel (DESIGN.md 1.3).
+``read_site`` / ``correct_site`` stay at native resolution (the plate percentiles are computed on
+them); resampling to a common pixel size (R7, ``resample.py``) happens after normalisation, inside
+``read_site_uint8``, ``normalise_site`` and the embedding adapters.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import threading
 import numpy as np
 
 from .. import CHANNELS
+from . import resample
 from .gallery import Gallery, illum_key
 from .illum import apply_illum, load_illum, read_npy_header
 from .tiff_io import decode_tiff, is_skipped_file
@@ -89,13 +93,15 @@ def read_site(g: Gallery, illum: IllumCache | None, row) -> np.ndarray:
     return correct_site(raw, illum, row) if illum is not None else raw.astype(np.float32)
 
 
-def read_site_uint8(g: Gallery, illum: IllumCache, row, lo, hi) -> np.ndarray:
-    """Fused decode -> illum divide -> plate percentile scaling -> uint8, one channel at a time.
+def read_site_uint8(g: Gallery, illum: IllumCache, row, lo, hi, scale: float = 1.0) -> np.ndarray:
+    """Fused decode -> illum divide -> plate percentile scaling -> resample (R7) -> uint8, one
+    channel at a time.
 
-    Same result as ``normalise_site(read_site(...), "per_plate_dmso", ...)`` up to float rounding,
-    but each channel (~4 MB float32) stays in CPU cache, so the cache build is not memory-bound
-    when many worker processes run at once."""
-    out = None
+    Same result as ``normalise_site(read_site(...), "per_plate_dmso", ..., scale=scale)`` up to
+    float rounding, but each channel (~4 MB float32) stays in CPU cache, so the cache build is not
+    memory-bound when many worker processes run at once. ``scale`` is
+    ``resample.scale_for(cfg.data, row.source)``; 1.0 keeps native pixels."""
+    out, shape0 = None, None
     for i, c in enumerate(CHANNELS):
         key = getattr(row, f"key_{c}")
         if is_skipped_file(key):
@@ -110,14 +116,16 @@ def read_site_uint8(g: Gallery, illum: IllumCache, row, lo, hi) -> np.ndarray:
             ikey if isinstance(ikey, str) and ikey else None,
             shape=raw.shape,
         )
-        if out is None:
-            out = np.empty((len(CHANNELS), *raw.shape), np.uint8)
-        elif raw.shape != out.shape[1:]:
+        if shape0 is not None and raw.shape != shape0:
             raise ValueError("channel shapes differ within a site")
+        shape0 = raw.shape
         x = raw.astype(np.float32)
         x /= fn
         x -= np.float32(lo[i])
         x *= np.float32(255.0 / (hi[i] - lo[i]))
+        x = resample.resample_site(x, scale)
+        if out is None:
+            out = np.empty((len(CHANNELS), *x.shape), np.uint8)
         np.clip(x, 0, 255, out=x)
         np.rint(x, out=x)
         out[i] = x

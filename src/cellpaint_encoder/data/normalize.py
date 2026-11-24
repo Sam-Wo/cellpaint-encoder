@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import resample
+
 MAX_PIX_PER_SITE = 250_000  # pixel subsample per site and channel when pooling percentiles
 
 
@@ -47,21 +49,35 @@ def image_percentiles(site: np.ndarray, lo: float = 0.1, hi: float = 99.9) -> tu
     return p_lo, p_hi
 
 
-def to_uint8(site: np.ndarray, p_lo: np.ndarray, p_hi: np.ndarray) -> np.ndarray:
+def to_uint8(site: np.ndarray, p_lo: np.ndarray, p_hi: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """Affine map to [0, 255] at native resolution, resample by ``scale`` (R7), clip, round."""
     lo = p_lo[:, None, None]
-    scale = 255.0 / (p_hi - p_lo)[:, None, None]
-    x = (site - lo) * scale
+    k = 255.0 / (p_hi - p_lo)[:, None, None]
+    x = (site - lo) * k
+    x = resample.resample_site(x, scale)
     np.clip(x, 0, 255, out=x)
     return np.rint(x).astype(np.uint8)
 
 
-def normalise_site(site: np.ndarray, mode: str, plate_norm: dict | None, lo: float, hi: float) -> np.ndarray:
+def normalise_site(
+    site: np.ndarray,
+    mode: str,
+    plate_norm: dict | None,
+    lo: float,
+    hi: float,
+    scale: float = 1.0,
+) -> np.ndarray:
+    """Normalise a native-resolution float site to uint8; ``scale`` resamples it (R7) after the
+    percentiles (plate or image) have been applied at native resolution."""
     if mode == "per_plate_dmso":
         if plate_norm is None:
             raise KeyError("per_plate_dmso normalisation needs the plate's percentiles")
         return to_uint8(
-            site, np.asarray(plate_norm["lo"], np.float32), np.asarray(plate_norm["hi"], np.float32)
+            site,
+            np.asarray(plate_norm["lo"], np.float32),
+            np.asarray(plate_norm["hi"], np.float32),
+            scale,
         )
     if mode == "per_image":
-        return to_uint8(site, *image_percentiles(site, lo, hi))
+        return to_uint8(site, *image_percentiles(site, lo, hi), scale)
     raise ValueError(f"unknown norm_mode {mode!r}")

@@ -2,7 +2,7 @@
 
 Self-supervised (DINO) ViT-S/16 encoder for 5-channel Cell Painting images from JUMP-CP, trained with a hand-written PyTorch loop and evaluated with the batch- and well-position controls learned in [ShapeShift](https://github.com/Sam-Wo/shapeshift).
 
-**Status:** design pre-registered in [DESIGN.md](DESIGN.md) (first commit). The code is complete and tested on CPU, including a smoke run on a handful of real JUMP sites. **No GPU training has been run.** [RUNBOOK.md](RUNBOOK.md) gives the exact commands for the gates, the pilot, the full run and the cut-down run.
+**Status:** design pre-registered in [DESIGN.md](DESIGN.md) (first commit); analysis plan frozen in [PREREG.md](PREREG.md) (tag `prereg-v1`) before the GPU pilot. The code is complete and tested on CPU, including a smoke run on a handful of real JUMP sites. **No GPU training has been run.** [RUNBOOK.md](RUNBOOK.md) gives the exact commands for the gates, the pilot, the full run and the cut-down run.
 
 ## Layout
 

@@ -3,8 +3,10 @@
 data:
   anchor_wells: data/anchor/anchor_wells_high.parquet
   anchor_wells_low: data/anchor/anchor_wells_low.parquet
-  plate_table: null              # set to JUMP metadata/plate.csv.gz to add E3 (Target-2) / E4 (DMSO plates)
-  jump_wells: null               # JUMP metadata/well.csv.gz (DMSO identity of non-anchor wells, E3 compounds)
+  # E3 (Target-2) and E4 (all-DMSO plates) are part of the full plan (DESIGN 1.2, PREREG). Pinned JUMP metadata,
+  # fetched by scripts/fetch_jump_metadata.py (pod.sh setup) from jump-cellpainting/datasets @ 016e865f.
+  plate_table: data/jump/plate.csv.gz
+  jump_wells: data/jump/well.csv.gz
   train_sources: [source_2, source_3, source_8, source_10]
   heldout_source: source_6
   eval_sources: [source_2, source_3, source_8, source_10, source_6]
@@ -18,6 +20,28 @@ data:
   tile_size: 448
   tiles_per_site: 2
   fg_min: 0.01
+  # R7 pixel size (RUNBOOK 4): after illum correction + normalisation at native resolution, resample
+  # every site to 0.65 um/px (antialiased bilinear) before tiling, in the caches and in embed.py.
+  # Sources within 2% keep native pixels (2, 10, held-out 6); 3 (x0.920) and 8 (x1.082) are resampled.
+  # Identical in every config (tests/test_resample.py); science keys, so part of the run hash.
+  resample_um_per_px: 0.65
+  resample_tol: 0.02
+  # um/px from jump-cellpainting/datasets metadata/microscope_config.csv, column
+  # Metadata_Pixel_Size_Microns, at commit b3b4555d44cac440ffda7e25f3adbeb34fbee7fe
+  pixel_size_um:
+    source_1: 0.597976
+    source_2: 0.65
+    source_3: 0.597976
+    source_4: 0.597976
+    source_5: 0.64974
+    source_6: 0.646187
+    source_7: 0.65
+    source_8: 0.7032
+    source_9: 0.597976
+    source_10: 0.6516944
+    source_11: 0.597976
+    source_13: 0.65
+    source_15: 0.597976
   raw_mirror: null               # no local mirror of raw TIFFs on the pod: stream once
   s3_workers: 64
   manifest: data/manifest.parquet
@@ -62,5 +86,7 @@ run:
   keep_every_epochs: 25
   log_every_steps: 50
 eval:
+  # M4b target-annotation mAP (PREREG): Target-2 targets from JUMP-Target @ 40ce99d4, via fetch_jump_metadata.py
+  target_table: data/jump/target2_targets.csv
   dev_every_epochs: 10
   moa_table: data/anchor/moa.csv

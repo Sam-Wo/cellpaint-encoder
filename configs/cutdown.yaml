@@ -1,6 +1,8 @@
 # Cut-down plan (DESIGN.md 0, 1.2): sources 2/3/8, 2 sites per well, 80 epochs x 202,892 tiles.
 base: full.yaml
 data:
+  plate_table: null   # cut-down drops Target-2 (DESIGN 1.2); its 2 DMSO plates are not wired
+  jump_wells: null
   train_sources: [source_2, source_3, source_8]
   eval_sources: [source_2, source_3, source_8, source_6]
   sites_per_well: 2
@@ -9,7 +11,30 @@ data:
   dev_shards_dir: data/cutdown/shards/dev
   e4_sources: [source_3]
   e4_plates_per_source: 2
+  # R7 pixel size (RUNBOOK 4): after illum correction + normalisation at native resolution, resample
+  # every site to 0.65 um/px (antialiased bilinear) before tiling, in the caches and in embed.py.
+  # Sources within 2% keep native pixels (2, 10, held-out 6); 3 (x0.920) and 8 (x1.082) are resampled.
+  # Identical in every config (tests/test_resample.py); science keys, so part of the run hash.
+  resample_um_per_px: 0.65
+  resample_tol: 0.02
+  # um/px from jump-cellpainting/datasets metadata/microscope_config.csv, column
+  # Metadata_Pixel_Size_Microns, at commit b3b4555d44cac440ffda7e25f3adbeb34fbee7fe
+  pixel_size_um:
+    source_1: 0.597976
+    source_2: 0.65
+    source_3: 0.597976
+    source_4: 0.597976
+    source_5: 0.64974
+    source_6: 0.646187
+    source_7: 0.65
+    source_8: 0.7032
+    source_9: 0.597976
+    source_10: 0.6516944
+    source_11: 0.597976
+    source_13: 0.65
+    source_15: 0.597976
 eval:
+  target_table: null
   reference_sources: [source_2, source_3, source_8]
 optim:
   epochs: 80

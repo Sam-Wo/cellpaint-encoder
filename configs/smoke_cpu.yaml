@@ -2,6 +2,8 @@
 # Masking stays on: trains on non-anchor wells only; evaluates source_3 queries against source_2.
 base: full.yaml
 data:
+  plate_table: null   # smoke data have no E3/E4 plates and CI has no data/jump
+  jump_wells: null
   plates: ["1086292082", "1086292433", "BR5872d3"]
   train_sources: [source_2, source_3]
   eval_sources: [source_2, source_3]
@@ -14,6 +16,28 @@ data:
   n_eval_dmso_per_plate: 1
   n_dev_dmso_per_plate: 1
   norm_sites_per_plate: 1
+  # R7 pixel size (RUNBOOK 4): after illum correction + normalisation at native resolution, resample
+  # every site to 0.65 um/px (antialiased bilinear) before tiling, in the caches and in embed.py.
+  # Sources within 2% keep native pixels (2, 10, held-out 6); 3 (x0.920) and 8 (x1.082) are resampled.
+  # Identical in every config (tests/test_resample.py); science keys, so part of the run hash.
+  resample_um_per_px: 0.65
+  resample_tol: 0.02
+  # um/px from jump-cellpainting/datasets metadata/microscope_config.csv, column
+  # Metadata_Pixel_Size_Microns, at commit b3b4555d44cac440ffda7e25f3adbeb34fbee7fe
+  pixel_size_um:
+    source_1: 0.597976
+    source_2: 0.65
+    source_3: 0.597976
+    source_4: 0.597976
+    source_5: 0.64974
+    source_6: 0.646187
+    source_7: 0.65
+    source_8: 0.7032
+    source_9: 0.597976
+    source_10: 0.6516944
+    source_11: 0.597976
+    source_13: 0.65
+    source_15: 0.597976
   raw_mirror: data/raw
   byte_cap: 300.0e6
   s3_workers: 8
@@ -46,6 +70,7 @@ run:
   log_every_steps: 1
   threads: 4
 eval:
+  target_table: null
   dev_every_epochs: 0
   batch_size: 16
   dev_query_sources: [source_3]

@@ -8,13 +8,19 @@
 3. dev cache: anchor wells + 4 DMSO wells per plate of the dev sources, centred 896^2 sites
    -> ``data.dev_shards_dir``
 
+Pixel size (R7): with ``data.resample_um_per_px`` set, every site is resampled to that µm/px after
+illumination correction and normalisation at native resolution (plate percentiles stay native),
+before tiling and the foreground filter; sources within ``data.resample_tol`` keep native pixels.
+The settings and per-source scales go into both caches' ``stats.json``; train/embed check them.
+
 Parallelism: ``--procs`` worker processes (decode + illum + normalise + tile are CPU-bound and
 hold the GIL, so threads alone plateau at ~2x one core), each with ``data.s3_workers / procs``
 fetch threads. Work is cut into plate-contiguous chunks and written in chunk order, so the output
 is deterministic given the manifest, the code and ``data.manifest_seed``. (Shards are not
 plate-mixed; the sampler reads by index, so shard order does not affect training batches.)
 ``data.byte_cap`` is enforced per worker process. Timing, the zstd ratio and the foreground drop
-rate go into ``stats.json`` and ``write_shards_summary.json``.
+rate go into ``stats.json`` and ``write_shards_summary.json``. ``--procs 0`` runs everything in the
+main process (tests, debugging).
 """
 
 import sys
@@ -36,6 +42,7 @@ from cellpaint_encoder.data.gallery import Gallery
 from cellpaint_encoder.data.manifest import _rng, check_train_index
 from cellpaint_encoder.data.normalize import normalise_site
 from cellpaint_encoder.data.plate_norm import compute_plate_norms
+from cellpaint_encoder.data.resample import resample_record, scale_for
 from cellpaint_encoder.data.shards import ShardWriter
 from cellpaint_encoder.data.sites import IllumCache, read_site, read_site_uint8
 from cellpaint_encoder.data.tiles import centre_crop, training_tiles
@@ -51,8 +58,12 @@ def site_meta(r: dict) -> dict:
     return d
 
 
-def _init(cfg_path, overrides, norms, threads):
+def _init(cfg_path, overrides, norms, threads, worker=True):
     cfg = load_config(cfg_path, overrides)
+    if worker and cfg.data.resample_um_per_px is not None:
+        import torch
+
+        torch.set_num_threads(1)  # procs x fetch threads already fill the cores
     g = Gallery(mirror=cfg.data.raw_mirror, byte_cap=cfg.data.byte_cap, ledger=False)
     _W.update(cfg=cfg, g=g, il=IllumCache(g, max_plates=2), norms=norms, threads=threads)
 
@@ -61,11 +72,12 @@ def _process_site(kind: str, r: dict):
     dc, g, il, norms = _W["cfg"].data, _W["g"], _W["il"], _W["norms"]
     row = pd.Series(r)
     t0 = time.time()
+    scale = scale_for(dc, r["source"])  # R7: applied after normalisation, before tiling
     if dc.norm_mode == "per_plate_dmso" or kind == "dev":
         nm = norms[r["plate"]]
-        u8 = read_site_uint8(g, il, row, nm["lo"], nm["hi"])  # fused, cache-friendly path
+        u8 = read_site_uint8(g, il, row, nm["lo"], nm["hi"], scale=scale)  # fused, cache-friendly path
     else:
-        u8 = normalise_site(read_site(g, il, row), dc.norm_mode, None, dc.pct_lo, dc.pct_hi)
+        u8 = normalise_site(read_site(g, il, row), dc.norm_mode, None, dc.pct_lo, dc.pct_hi, scale=scale)
     t1 = time.time()
     if kind == "train":
         rng = _rng(dc.manifest_seed, "tiles", r["plate"], r["well"], str(r["site"]))
@@ -91,6 +103,19 @@ def chunks(df: pd.DataFrame, size: int):
             yield recs[i : i + size]
 
 
+class _Serial:
+    """In-process stand-in for the process pool (``--procs 0``)."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def map(self, fn, it):
+        return map(fn, it)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -101,9 +126,8 @@ def main():
     a = ap.parse_args()
     cfg = load_config(a.config, a.overrides)
     dc = cfg.data
-    if dc.resample_um_per_px is not None:
-        raise NotImplementedError("data.resample_um_per_px (R7) is not implemented yet; see RUNBOOK 4")
     m = pd.read_parquet(dc.manifest)
+    resample_all = resample_record(dc, set(m[m.train | m.dev].source))  # raises for a missing pixel size
     g = Gallery(mirror=dc.raw_mirror, byte_cap=dc.byte_cap)
     il = IllumCache(g, max_plates=4)
     norm_path = Path(dc.manifest).with_name("plate_norm.json")
@@ -113,6 +137,7 @@ def main():
         "plate_norm_plates": len(norms),
         "norm_seconds": round(time.time() - t_all, 2),
         "procs": a.procs,
+        **resample_all,
     }
     need = set(m[m.train | m.dev].plate) - set(norms)
     if need and dc.norm_mode == "per_plate_dmso":
@@ -123,9 +148,14 @@ def main():
     threads = max(1, dc.s3_workers // max(a.procs, 1))
     t_read = t_proc = 0.0
     net_bytes = g.bytes_downloaded
-    with ProcessPoolExecutor(
-        a.procs, initializer=_init, initargs=(a.config, a.overrides, norms, threads)
-    ) as ex:
+    if a.procs == 0:
+        _init(a.config, a.overrides, norms, threads, worker=False)
+        pool = _Serial()
+    else:
+        pool = ProcessPoolExecutor(
+            a.procs, initializer=_init, initargs=(a.config, a.overrides, norms, threads)
+        )
+    with pool as ex:
         for kind, sel, out_dir in (("train", m.train, dc.shards_dir), ("dev", m.dev, dc.dev_shards_dir)):
             if a.only not in (None, kind):
                 continue
@@ -171,6 +201,7 @@ def main():
                 )
             else:
                 st["site_size"] = dc.dev_site_size
+            st.update(resample_record(dc, set(rows.source)))  # checked by train.py / embed.py
             idx = w.close(st)
             if kind == "train":
                 check_train_index(idx, m, dc)  # leakage check on what was written (R8)

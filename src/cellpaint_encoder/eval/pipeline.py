@@ -79,10 +79,13 @@ def evaluate_wells(
     eps: float | None = None,
     moa: pd.DataFrame | None = None,
     which: tuple[str, ...] = ("all",),
+    targets: pd.DataFrame | None = None,
 ) -> dict:
     """All metrics for one representation. Post-processing (robust z, whitening) is fitted once on
     every evaluation plate present; the E1 metrics use E1 wells only, M5 adds E2 (low dose) queries,
-    M4 uses E3 (Target-2) wells, and the E4 (all-DMSO plates) position probe uses E4 wells."""
+    M4 uses E3 (Target-2) wells, and the E4 (all-DMSO plates) position probe uses E4 wells.
+    ``targets`` (compound_id, targets ``|``-separated; ``eval.target_table``) enables the M4
+    target-annotation mAP; without it that metric is skipped with a note."""
     e = cfg.eval
     meta, X = lock_heldout(meta.reset_index(drop=True), X, cfg)
     res: dict = {"n_wells": len(meta), "n_plates": int(meta.plate.nunique()), "locked": not e.unlock_heldout}
@@ -162,6 +165,26 @@ def evaluate_wells(
         tables["M4_target2"] = per
         res["M4_target2"] = {"mAP": float(per.mAP.mean()) if len(per) else float("nan"), "n_groups": len(per)}
 
+        # M4 target annotation: consensus profiles exactly as M3 (median of wells within source,
+        # then mean across sources; here every E3 source present), multilabel target retrieval
+        if targets is None:
+            res["M4_target_annotation"] = {"skipped": "eval.target_table not set"}
+        else:
+            m4r = m4.reset_index(drop=True)
+            cons, C = retrieval.consensus(m4r, V4)
+            tmap = dict(zip(targets.compound_id.astype(str), targets.targets))
+            lab = cons.compound_id.astype(str).map(tmap).to_numpy(dtype=object)
+            per, s, q = retrieval.label_retrieval(
+                lab, C, multilabel=True, n_shuffle=e.n_label_shuffle, **q_kw
+            )
+            ids = cons.compound_id.to_numpy()
+            q["compound_id"] = ids[q["query"].to_numpy()] if len(q) else []
+            per["compound_id"] = ids[per["query"].to_numpy().astype(int)] if len(per) else []
+            s["sources"] = sorted(set(m4r.source))
+            s["n_e3_compounds"] = len(cons)
+            res["M4_target_annotation"] = s
+            tables["M4_target_annotation"], tables["M4_target_annotation_queries"] = per, q
+
     # ---- M5: cross-dose (exploratory): low-dose (E2) queries against 10 uM references (E1)
     if (every or "m5" in want) and (sets == "E2").any():
         m5 = (sets == "E1") | (sets == "E2")
@@ -227,10 +250,12 @@ def dev_eval_hook(trainer) -> dict:
     teacher backbone and report dev cross-source mAP, M1 and the position probe."""
     import copy
 
+    from ..data.resample import check_shards_resample
     from ..embed.encoders import ViTEncoder
     from ..embed.run import embed_dev_shards
 
     cfg = trainer.cfg
+    check_shards_resample(cfg.data.dev_shards_dir, cfg.data, "dev shards")  # R7
     bb = copy.deepcopy(trainer.teacher.backbone).eval()
     enc = ViTEncoder(
         "ours_dev",
